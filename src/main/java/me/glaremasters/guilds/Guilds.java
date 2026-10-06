@@ -1,38 +1,11 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds;
 
 import co.aikar.commands.PaperCommandManager;
 import co.aikar.taskchain.BukkitTaskChainFactory;
 import co.aikar.taskchain.TaskChain;
 import co.aikar.taskchain.TaskChainFactory;
-import com.google.common.collect.Lists;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import io.github.slimjar.app.builder.ApplicationBuilder;
-import io.github.slimjar.resolver.data.Repository;
-import io.github.slimjar.resolver.mirrors.SimpleMirrorSelector;
 import me.glaremasters.guilds.acf.ACFHandler;
 import me.glaremasters.guilds.actions.ActionHandler;
 import me.glaremasters.guilds.api.GuildsAPI;
@@ -58,10 +31,8 @@ import me.glaremasters.guilds.listeners.VaultBlacklistListener;
 import me.glaremasters.guilds.listeners.WorldGuardListener;
 import me.glaremasters.guilds.placeholders.PlaceholderAPI;
 import me.glaremasters.guilds.updater.UpdateChecker;
-import me.glaremasters.guilds.utils.BackupUtils;
 import me.glaremasters.guilds.utils.LanguageUpdater;
 import me.glaremasters.guilds.utils.LoggingUtils;
-import me.glaremasters.guilds.utils.StringUtils;
 import net.kyori.adventure.platform.bukkit.BukkitAudiences;
 import net.milkbowl.vault.economy.Economy;
 import net.milkbowl.vault.permission.Permission;
@@ -71,19 +42,34 @@ import org.bstats.charts.SingleLineChart;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.codemc.worldguardwrapper.WorldGuardWrapper;
+import org.bxteam.quark.bukkit.BukkitLibraryManager;
+import org.jetbrains.annotations.Nullable;
 
-import java.io.File;
 import java.io.IOException;
-import java.net.URISyntaxException;
-import java.net.URL;
-import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
-import java.time.Instant;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 public final class Guilds extends JavaPlugin {
+
+    /** Ticks in one Minecraft minute, as used by the autosave period. */
+    private static final long TICKS_PER_MINUTE = 20L * 60L;
+
+    /** Delay before the first autosave runs, in ticks (one minute). */
+    private static final long SAVE_TASK_INITIAL_DELAY_TICKS = TICKS_PER_MINUTE;
+
+    /** Smallest autosave period the scheduler will accept, in whole minutes. */
+    private static final int MINIMUM_SAVE_INTERVAL_MINUTES = 1;
+
+    /**
+     * A save routine that is allowed to throw {@link IOException}.
+     *
+     * <p>{@link java.util.function.Consumer} cannot express a checked exception, so the save
+     * paths need their own functional interface to be passed around as a value.
+     */
+    @FunctionalInterface
+    private interface SaveRoutine {
+        void run() throws IOException;
+    }
 
     private static GuildsAPI api;
     private static Gson gson;
@@ -102,6 +88,7 @@ public final class Guilds extends JavaPlugin {
     private Permission permissions;
     private BukkitAudiences adventure;
     private ChatListener chatListener;
+    private BukkitLibraryManager libraryManager;
 
     public static Gson getGson() {
         return gson;
@@ -113,48 +100,76 @@ public final class Guilds extends JavaPlugin {
 
     @Override
     public void onLoad() {
-        final Logger logger = getLogger();
-        final File dependencyDirectory = new File(getDataFolder(), "Libraries");
-        logger.log(Level.INFO, "Loading Libraries...");
-        logger.log(Level.INFO, "Note: This might take a few minutes on first run. Kindly ensure internet connectivity.");
-        final Instant startInstant = Instant.now();
-        try {
-            ApplicationBuilder
-                    .appending("Guilds")
-                    .downloadDirectoryPath(dependencyDirectory.toPath())
-                    .internalRepositories(Lists.newArrayList(
-                            new Repository(new URL("https://repo.glaremasters.me/repository/public/")),
-                            new Repository(new URL(SimpleMirrorSelector.DEFAULT_CENTRAL_MIRROR_URL))))
-                    .build();
-            final Instant endInstant = Instant.now();
-            final long timeTaken = Duration.between(startInstant, endInstant).toMillis();
-            final double timeTakenSeconds = timeTaken / 1000.0;
-            logger.log(Level.INFO, "Loaded libraries in {0} seconds", timeTakenSeconds);
-        } catch (IOException | ReflectiveOperationException | URISyntaxException | NoSuchAlgorithmException exception) {
-            logger.log(Level.SEVERE, "Unable to load dependencies... Please ensure an active Internet connection on first run!");
-            exception.printStackTrace();
-        }
+        libraryManager = new BukkitLibraryManager(this);
+        libraryManager.loadFromGradle();
     }
 
     @Override
     public void onDisable() {
-        if (checkVault() && economy != null) {
-            try {
-                guildHandler.saveData();
-                cooldownHandler.saveCooldowns();
-                arenaHandler.saveArenas();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            guildHandler.chatLogout();
-            guildHandler.getLookupCache().clear();
-            commandManager.unregisterCommands();
-        }
+        /*
+         * Persist first, and unconditionally. This sat behind a `checkVault() && economy != null`
+         * guard, so a server that lost its Vault economy provider saved nothing at all.
+         */
+        savePluginData();
+
+        /*
+         * Teardown, one step at a time.
+         *
+         * Every step below can be missing after a partial onEnable, and each one is wrapped so a
+         * failure is logged rather than thrown. A step that threw here would skip every step after
+         * it, including closing the database, and would bury the original startup error underneath
+         * a shutdown stack trace. See #777.
+         *
+         * The chat listener is the awkward one: it is created near the end of onEnable, so a guild
+         * handler can exist while it does not, and GuildHandler#chatLogout() reads through it.
+         */
+        runCleanup(chatListener == null ? null : () -> guildHandler.chatLogout(), "guild chat");
+        runCleanup(guildHandler == null ? null : () -> guildHandler.getLookupCache().clear(), "the guild lookup cache");
+        runCleanup(commandManager == null ? null : commandManager::unregisterCommands, "commands");
 
         if (database != null) {
             LoggingUtils.info("Shutting down database...");
-            database.close();
-            LoggingUtils.info("Database has been shut down.");
+            if (runCleanup(database::close, "the database")) {
+                LoggingUtils.info("Database has been shut down.");
+            }
+        }
+
+        if (adventure != null) {
+            runCleanup(() -> adventure.close(), "adventure audiences");
+            adventure = null;
+        }
+    }
+
+    /**
+     * Flushes every data handler to its storage backend.
+     *
+     * <p>Each handler is saved independently, so one bad record does not cost the server owner
+     * every other kind of data.
+     */
+    private void savePluginData() {
+        runCleanup(guildHandler == null ? null : guildHandler::saveData, "guild data");
+        runCleanup(cooldownHandler == null ? null : cooldownHandler::saveCooldowns, "cooldown data");
+        runCleanup(arenaHandler == null ? null : arenaHandler::saveArenas, "arena data");
+    }
+
+    /**
+     * Runs one shutdown step, logging (never rethrowing) whatever it throws.
+     *
+     * @param step  the routine, or null when the object it needs was never created
+     * @param label what is being saved or cleaned up, used in log messages
+     * @return true when the step ran without throwing
+     */
+    private boolean runCleanup(@Nullable SaveRoutine step, String label) {
+        if (step == null) {
+            return false;
+        }
+
+        try {
+            step.run();
+            return true;
+        } catch (IOException | RuntimeException e) {
+            LoggingUtils.severe("An error occurred while saving or cleaning up " + label + ".", e);
+            return false;
         }
     }
 
@@ -198,6 +213,12 @@ public final class Guilds extends JavaPlugin {
             return;
         }
 
+        if (permissions == null) {
+            LoggingUtils.warn("It looks like you don't have a Permissions plugin hooked into Vault on your server! Stopping plugin..");
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+
         settingsHandler = new SettingsHandler(this);
 
         LoggingUtils.info("Economy Found: " + economy.getName());
@@ -237,7 +258,7 @@ public final class Guilds extends JavaPlugin {
             // Load guildhandler with provider
             guildHandler = new GuildHandler(this, settingsHandler.getMainConf());
         } catch (IOException e) {
-            LoggingUtils.severe("An error occurred loading data! Stopping plugin..");
+            LoggingUtils.severe("An error occurred loading data! Stopping plugin..", e);
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
@@ -263,16 +284,6 @@ public final class Guilds extends JavaPlugin {
         acfHandler.load();
 
         guiHandler = new GUIHandler(this, settingsHandler.getMainConf(), guildHandler, getCommandManager(), cooldownHandler);
-
-        if (settingsHandler.getMainConf().getProperty(PluginSettings.ANNOUNCEMENTS_CONSOLE)) {
-            newChain().async(() -> {
-                try {
-                    LoggingUtils.info(StringUtils.getAnnouncements(this));
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }).execute();
-        }
 
         UpdateChecker.runCheck(this, settingsHandler.getMainConf());
 
@@ -301,19 +312,32 @@ public final class Guilds extends JavaPlugin {
                 //cooldownHandler.saveCooldowns(); We are going to save on shutdown only, no need for runtime saving
                 arenaHandler.saveArenas();
                 challengeHandler.saveData();
-            } catch (IOException e) {
-                e.printStackTrace();
+            } catch (IOException | RuntimeException e) {
+                LoggingUtils.severe("An error occurred while saving plugin data during the scheduled save task.", e);
             }
-        }, 20 * 60, (20 * 60) * settingsHandler.getMainConf().getProperty(StorageSettings.SAVE_INTERVAL));
+        }, SAVE_TASK_INITIAL_DELAY_TICKS, resolveSaveIntervalTicks());
     }
 
     /**
-     * Check if Vault is running
+     * Resolves the configured autosave interval into a period Bukkit will accept.
      *
-     * @return true or false
+     * <p>{@code scheduleAsyncRepeatingTask} rejects a non-positive period, and {@code 0} is a
+     * natural thing to write to mean "only on shutdown". A large interval also overflows the
+     * {@code int} tick count. Both used to escape {@link #onEnable()} as a stack trace that never
+     * named the config key.
+     *
+     * @return the autosave period in ticks, always positive
      */
-    private boolean checkVault() {
-        return Bukkit.getPluginManager().isPluginEnabled("Vault");
+    private long resolveSaveIntervalTicks() {
+        final int configuredMinutes = settingsHandler.getMainConf().getProperty(StorageSettings.SAVE_INTERVAL);
+
+        if (configuredMinutes < MINIMUM_SAVE_INTERVAL_MINUTES) {
+            LoggingUtils.warn("storage.save-interval must be at least " + MINIMUM_SAVE_INTERVAL_MINUTES
+                    + " (found " + configuredMinutes + "). Falling back to " + MINIMUM_SAVE_INTERVAL_MINUTES
+                    + ". Data is still saved when the server stops.");
+        }
+
+        return Math.max((long) configuredMinutes, MINIMUM_SAVE_INTERVAL_MINUTES) * TICKS_PER_MINUTE;
     }
 
     //todo what about a hook package with a hook manager for these 3 listeners and PlaceholderAPI?
@@ -327,9 +351,34 @@ public final class Guilds extends JavaPlugin {
         }
 
         if (settingsHandler.getMainConf().getProperty(HooksSettings.WORLDGUARD)) {
-            getServer().getPluginManager().registerEvents(new WorldGuardListener(guildHandler), this);
-            getServer().getPluginManager().registerEvents(new ClaimSignListener(this, settingsHandler.getMainConf(), guildHandler), this);
+            registerWorldGuardListeners();
         }
+    }
+
+    /**
+     * Register WorldGuard-backed listeners only when the optional hook is available.
+     */
+    private void registerWorldGuardListeners() {
+        if (!Bukkit.getPluginManager().isPluginEnabled("WorldGuard")) {
+            LoggingUtils.warn("WorldGuard hook is enabled in config, but WorldGuard is not installed or enabled. Skipping WorldGuard claim listeners.");
+            return;
+        }
+
+        final WorldGuardWrapper wrapper;
+        try {
+            wrapper = WorldGuardWrapper.getInstance();
+        } catch (RuntimeException | LinkageError e) {
+            LoggingUtils.warn("WorldGuard hook is enabled, but WorldGuardWrapper could not initialize. Skipping WorldGuard claim listeners.", e);
+            return;
+        }
+
+        if (wrapper == null) {
+            LoggingUtils.warn("WorldGuard hook is enabled, but WorldGuardWrapper returned no instance. Skipping WorldGuard claim listeners.");
+            return;
+        }
+
+        getServer().getPluginManager().registerEvents(new WorldGuardListener(guildHandler, wrapper), this);
+        getServer().getPluginManager().registerEvents(new ClaimSignListener(this, settingsHandler.getMainConf(), guildHandler, wrapper), this);
     }
 
     /**

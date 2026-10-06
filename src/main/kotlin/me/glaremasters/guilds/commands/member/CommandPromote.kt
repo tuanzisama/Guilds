@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.commands.member
 
 import co.aikar.commands.BaseCommand
@@ -59,24 +36,26 @@ internal class CommandPromote : BaseCommand() {
     fun promote(player: Player, @Conditions("perm:perm=PROMOTE") guild: Guild, @Values("@members") @Single target: String) {
         val user = Bukkit.getOfflinePlayer(target)
 
-        if (user.name.equals(player.name)) {
+        // Compare by UUID. OfflinePlayer#getName() is nullable and follows the player's current
+        // name, so comparing names let a renamed player slip past the self-check.
+        if (RoleUtils.isSamePlayer(user, player)) {
             throw ExpectationNotMet(Messages.PROMOTE__CANT_PROMOTE)
         }
 
-        if (!RoleUtils.inGuild(guild, user) && !RoleUtils.checkPromote(guild, user, player)) {
-            throw ExpectationNotMet(Messages.ERROR__PLAYER_NOT_IN_GUILD, "{player}", target)
-        }
+        val targetMember = guild.getMember(user.uniqueId)
+            ?: throw ExpectationNotMet(Messages.ERROR__PLAYER_NOT_IN_GUILD, "{player}", target)
 
-        if (RoleUtils.isOfficer(guild, user)) {
+        if (!RoleUtils.checkPromote(guild, user, player)) {
             throw ExpectationNotMet(Messages.PROMOTE__CANT_PROMOTE)
         }
 
-        val asMember = guild.getMember(user.uniqueId)
+        val oldRole = targetMember.role.name
 
-        RoleUtils.promote(guildHandler, guild, user)
+        if (!RoleUtils.tryPromote(guildHandler, guild, user)) {
+            throw ExpectationNotMet(Messages.PROMOTE__CANT_PROMOTE)
+        }
 
-        val oldRole = RoleUtils.getPrePromotedRoleName(guildHandler, asMember)
-        val newRole = RoleUtils.getCurrentRoleName(asMember)
+        val newRole = targetMember.role.name
 
         currentCommandIssuer.sendInfo(Messages.PROMOTE__PROMOTE_SUCCESSFUL, "{player}", target, "{old}", oldRole, "{new}", newRole)
 

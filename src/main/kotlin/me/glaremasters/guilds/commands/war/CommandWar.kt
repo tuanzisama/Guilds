@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.commands.war
 
 import ch.jalu.configme.SettingsManager
@@ -79,12 +56,22 @@ internal class CommandWar : BaseCommand() {
         val challenge = challengeHandler.getChallenge(guild) ?: throw ExpectationNotMet(Messages.WAR__NO_PENDING_CHALLENGE)
         val challenger = challenge.challenger
 
+        // A challenge is answered by the guild being challenged. The challenger answering its own
+        // challenge would accept or deny the war without the defender ever consenting to it.
+        if (challenge.defender != guild) {
+            throw ExpectationNotMet(Messages.WAR__NO_PENDING_CHALLENGE)
+        }
+
         if (challenge.isAccepted) {
             throw ExpectationNotMet(Messages.WAR__ALREADY_ACCEPTED)
         }
 
-        val event = GuildWarAcceptEvent(player, guild, challenger)
+        val event = GuildWarAcceptEvent(player, challenger, guild)
         Bukkit.getPluginManager().callEvent(event)
+
+        if (event.isCancelled) {
+            return
+        }
 
         val joinTime = settingsManager.getProperty(WarSettings.JOIN_TIME)
         val readyTime = settingsManager.getProperty(WarSettings.READY_TIME)
@@ -134,11 +121,11 @@ internal class CommandWar : BaseCommand() {
         }
 
         if (arena.challengerLoc == null) {
-            throw ExpectationNotMet(Messages.ARENA__LOCATION__ISSUE__CHALLENGER, "{arena}", arena.name)
+            throw ExpectationNotMet(Messages.ARENA__LOCATION_ISSUE_CHALLENGER, "{arena}", arena.name)
         }
 
         if (arena.defenderLoc == null) {
-            throw ExpectationNotMet(Messages.ARENA__LOCATION__ISSUE__DEFENDER, "{arena}", arena.name)
+            throw ExpectationNotMet(Messages.ARENA__LOCATION_ISSUE_DEFENDER, "{arena}", arena.name)
         }
 
         val event = GuildWarChallengeEvent(player, guild, targetGuild)
@@ -177,8 +164,18 @@ internal class CommandWar : BaseCommand() {
         val challenge = challengeHandler.getChallenge(guild) ?: throw ExpectationNotMet(Messages.WAR__NO_PENDING_CHALLENGE)
         val challenger = challenge.challenger
 
+        // Only the challenged guild may deny, otherwise the challenger could clear its own
+        // challenge and free the arena while pretending the defender declined it.
+        if (challenge.defender != guild) {
+            throw ExpectationNotMet(Messages.WAR__NO_PENDING_CHALLENGE)
+        }
+
         val event = GuildWarDeclineEvent(player, challenger, guild)
         Bukkit.getPluginManager().callEvent(event)
+
+        if (event.isCancelled) {
+            return
+        }
 
         challenger.sendMessage(currentCommandManager, Messages.WAR__CHALLENGE_DENIED_CHALLENGER, "{guild}", guild.name)
         guild.sendMessage(currentCommandManager, Messages.WAR__CHALLENGE_DENIED_DEFENDER, "{guild}", challenger.name)
@@ -201,6 +198,9 @@ internal class CommandWar : BaseCommand() {
 
         var side = ""
 
+        // The side reported to GuildWarPlayerJoinEvent has to match the roster the player was just
+        // added to. These were previously swapped, so third-party listeners were told the wrong
+        // team for every single join.
         if (challenge.defender == guild) {
             if (challenge.defendPlayers.contains(player.uniqueId)) {
                 throw ExpectationNotMet(Messages.WAR__ALREADY_JOINED)
@@ -209,7 +209,7 @@ internal class CommandWar : BaseCommand() {
                 throw ExpectationNotMet(Messages.WAR__ALREADY_AT_MAX)
             }
             challenge.defendPlayers.add(player.uniqueId)
-            side = "challenger"
+            side = "defender"
         } else {
             if (challenge.challengePlayers.contains(player.uniqueId)) {
                 throw ExpectationNotMet(Messages.WAR__ALREADY_JOINED)
@@ -218,7 +218,7 @@ internal class CommandWar : BaseCommand() {
                 throw ExpectationNotMet(Messages.WAR__ALREADY_AT_MAX)
             }
             challenge.challengePlayers.add(player.uniqueId)
-            side = "defender"
+            side = "challenger"
         }
 
         val event = GuildWarPlayerJoinEvent(challenge.challenger, challenge.defender, player, side)

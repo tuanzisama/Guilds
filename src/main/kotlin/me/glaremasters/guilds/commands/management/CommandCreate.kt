@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.commands.management
 
 import ch.jalu.configme.SettingsManager
@@ -50,6 +27,7 @@ import me.glaremasters.guilds.guild.GuildMember
 import me.glaremasters.guilds.messages.Messages
 import me.glaremasters.guilds.utils.Constants
 import me.glaremasters.guilds.utils.EconomyUtils
+import me.glaremasters.guilds.utils.GuildInputValidator
 import me.glaremasters.guilds.utils.StringUtils
 import net.milkbowl.vault.economy.Economy
 import net.milkbowl.vault.permission.Permission
@@ -81,7 +59,7 @@ internal class CommandCreate : BaseCommand() {
 
         val cost = settingsManager.getProperty(CostSettings.CREATION)
 
-        if (guildHandler.checkGuildNames(name)) {
+        if (GuildInputValidator.isNameTaken(name, guildHandler.guilds.values)) {
             throw ExpectationNotMet(Messages.CREATE__GUILD_NAME_TAKEN)
         }
 
@@ -89,17 +67,17 @@ internal class CommandCreate : BaseCommand() {
             throw ExpectationNotMet(Messages.ERROR__BLACKLIST)
         }
 
-        if (!guildHandler.nameCheck(name, settingsManager)) {
+        if (!GuildInputValidator.isValidName(name, settingsManager)) {
             throw ExpectationNotMet(Messages.CREATE__REQUIREMENTS)
         }
 
         if (!settingsManager.getProperty(GuildSettings.DISABLE_PREFIX)) {
             if (prefix != null) {
-                if (!guildHandler.prefixCheck(prefix, settingsManager)) {
+                if (!GuildInputValidator.isValidPrefix(prefix, settingsManager)) {
                     throw ExpectationNotMet(Messages.CREATE__PREFIX_TOO_LONG)
                 }
             } else {
-                if (!guildHandler.prefixCheck(name, settingsManager)) {
+                if (!GuildInputValidator.isValidPrefix(name, settingsManager)) {
                     throw ExpectationNotMet(Messages.CREATE__NAME_TOO_LONG)
                 }
             }
@@ -152,19 +130,19 @@ internal class CommandCreate : BaseCommand() {
                 Bukkit.getPluginManager().callEvent(event)
 
                 if (event.isCancelled) {
+                    actionHandler.removeAction(player)
                     return
                 }
 
                 guildHandler.addGuild(guild)
                 economy.withdrawPlayer(player, cost)
                 currentCommandIssuer.sendInfo(Messages.CREATE__SUCCESSFUL, "{guild}", guild.name)
+
+                guildHandler.addToMemberCache(player.uniqueId, guild.id)
                 guildHandler.addGuildPerms(permission, player)
                 guildHandler.addRolePerm(permission, player)
 
                 guild.updateGuildSkull(player, settingsManager)
-
-                guildHandler.addToMemberCache(player.uniqueId, guild.id)
-
 
                 actionHandler.removeAction(player)
             }

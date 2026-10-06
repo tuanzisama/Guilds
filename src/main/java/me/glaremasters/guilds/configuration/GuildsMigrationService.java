@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.configuration;
 
 import ch.jalu.configme.configurationdata.ConfigurationData;
@@ -62,16 +39,24 @@ public class GuildsMigrationService extends PlainMigrationService {
      * @return old paths or not
      */
     private static boolean hasDeprecatedProperties(PropertyReader reader) {
+        /*
+         * Only paths that no longer exist in any SettingsHolder belong here.
+         *
+         * ConfigMe rewrites the whole config file whenever this returns true (checkAndMigrate ->
+         * save() -> exportProperties), which strips admin comments and any custom keys. A path that
+         * is still a live property therefore makes every single startup look like a migration:
+         * timers.cooldowns.sethome used to be listed here while CooldownSettings still defines it.
+         */
         String[] deprecatedProperties = {
                 "hooks.essentials-remove-brackets",
                 "tablist.enabled",
                 "settings.save-interval",
                 "settings.player-update-languages",
+                "settings.announcements",
                 "tiers.list",
                 "tiers.carry-over",
                 "roles",
                 "guis.guild-buffs",
-                "timers.cooldowns.sethome",
                 "guild.damage.respect-wg-pvp-flag",
                 "settings.syntax-name"
         };
@@ -101,7 +86,7 @@ public class GuildsMigrationService extends PlainMigrationService {
                 try {
                     newFile.createNewFile();
                 } catch (IOException ex) {
-                    ex.printStackTrace();
+                    LoggingUtils.severe("Unable to create migrated config file: " + newFile.getAbsolutePath(), ex);
                     return false;
                 }
                 YamlConfiguration config = YamlConfiguration.loadConfiguration(newFile);
@@ -118,7 +103,7 @@ public class GuildsMigrationService extends PlainMigrationService {
                     config.save(newFile);
                     LoggingUtils.info("&3Converting done!");
                 } catch (IOException ex) {
-                    ex.printStackTrace();
+                    LoggingUtils.severe("Unable to save migrated config file: " + newFile.getAbsolutePath(), ex);
                 }
             }
             return true;

@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.listeners;
 
 import co.aikar.commands.BukkitCommandIssuer;
@@ -84,20 +61,30 @@ public class ChatListener implements Listener {
             return;
         }
 
-        final Guild guild = guildHandler.getGuild(player);
+        // AsyncPlayerChatEvent is fired on the chat thread, and everything the fan-out touches
+        // belongs to the main thread: Guild#sendMessage resolves Bukkit.getPlayer, chatGenerator
+        // calls Player#getDisplayName and PlaceholderAPI, and the spy list is an ArrayList that
+        // addSpy mutates from the main thread. Iterating it from here can throw
+        // ConcurrentModificationException — and because the event is already cancelled by
+        // onChatLowest, that swallows the player's message with nothing logged.
+        //
+        // Only the delivery hops. Cancelling stays where it is, on the chat thread: the event reads
+        // its cancelled state when it returns, so a cancelled event that has not been cancelled yet
+        // would also be broadcast to the server. The guild lookup moves across too, since
+        // getGuild reads an unsynchronised HashMap.
+        Bukkit.getScheduler().runTask(guilds, () -> {
+            final Guild guild = guildHandler.getGuild(player);
 
-        if (guild == null) {
-            return;
-        }
+            if (guild == null) {
+                return;
+            }
 
-        if (chatType.equals(ChatType.GUILD)) {
-            guildHandler.handleGuildChat(guild, player, message);
-            return;
-        }
-
-        if (chatType.equals(ChatType.ALLY)) {
-            guildHandler.handleAllyChat(guild, player, message);
-        }
+            if (chatType.equals(ChatType.GUILD)) {
+                guildHandler.handleGuildChat(guild, player, message);
+            } else if (chatType.equals(ChatType.ALLY)) {
+                guildHandler.handleAllyChat(guild, player, message);
+            }
+        });
     }
 
     @EventHandler

@@ -1,40 +1,12 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.guis
 
 import ch.jalu.configme.SettingsManager
-import com.cryptomorin.xseries.SkullUtils
-import dev.triumphteam.gui.guis.Gui
 import dev.triumphteam.gui.guis.GuiItem
 import dev.triumphteam.gui.guis.PaginatedGui
 import me.glaremasters.guilds.Guilds
-import me.glaremasters.guilds.conf.GuildBuffSettings
 import me.glaremasters.guilds.configuration.sections.ExperimentalSettings
 import me.glaremasters.guilds.configuration.sections.GuildInfoMemberSettings
 import me.glaremasters.guilds.configuration.sections.GuildListSettings
-import me.glaremasters.guilds.configuration.sections.PluginSettings
-import me.glaremasters.guilds.exte.addBackground
 import me.glaremasters.guilds.exte.addBottom
 import me.glaremasters.guilds.guild.Guild
 import me.glaremasters.guilds.guild.GuildHandler
@@ -92,9 +64,14 @@ class MembersGUI(private val guilds: Guilds, private val settingsManager: Settin
      * @param guild the guild of the player
      */
     private fun addItems(gui: PaginatedGui, guild: Guild, player: Player) {
-        val members = guild.members
+        // Sort a copy. Guild#getMembers() hands back the live list, and that list is what gets
+        // serialised on save, so sorting it in place made the persisted member order depend on who
+        // happened to open this GUI.
+        val members = guild.members.toMutableList()
 
-        when (settingsManager.getProperty(GuildInfoMemberSettings.SORT_ORDER).toUpperCase()) {
+        // Locale.ROOT keeps the match below independent of the server's default locale. None of
+        // these keys contain an "i" today, so this is a guard rather than a fix for a live bug.
+        when (settingsManager.getProperty(GuildInfoMemberSettings.SORT_ORDER).uppercase(Locale.ROOT)) {
             "ROLE" -> members.sortWith(Comparator.comparingInt { g: GuildMember -> g.role.level })
             "NAME" -> members.sortWith(compareBy(GuildMember::name))
             "AGE" -> members.sortWith(Comparator.comparingLong(GuildMember::joinDate))
@@ -113,7 +90,7 @@ class MembersGUI(private val guilds: Guilds, private val settingsManager: Settin
             }
             val status = if (online) settingsManager.getProperty(GuildInfoMemberSettings.MEMBERS_ONLINE) else settingsManager.getProperty(GuildInfoMemberSettings.MEMBERS_OFFLINE)
             val role = guildHandler.getGuildRole(member.role.level)!!
-            val name = member.name
+            val name = member.name ?: "Member"
             val updated = mutableListOf<String>()
 
             lore.forEach { line ->

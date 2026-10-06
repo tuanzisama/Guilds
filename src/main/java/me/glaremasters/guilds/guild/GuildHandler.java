@@ -1,29 +1,7 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.guild;
 
 import ch.jalu.configme.SettingsManager;
+import com.cryptomorin.xseries.XMaterial;
 import co.aikar.commands.ACFBukkitUtil;
 import co.aikar.commands.ACFUtil;
 import co.aikar.commands.PaperCommandManager;
@@ -60,7 +38,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -94,7 +75,7 @@ public class GuildHandler {
         try {
             loadGuilds();
         } catch (IOException e) {
-            e.printStackTrace();
+            LoggingUtils.severe("An error occurred while loading guild data.", e);
         }
     }
 
@@ -111,6 +92,14 @@ public class GuildHandler {
         for (Guild guild : guilds.values()) {
             // Create the vault cache
             createVaultCache(guild);
+            // A guild whose tier could not be resolved when it was last saved has a null tier.
+            // Gson omits null fields, so the tier key is missing from the stored JSON entirely.
+            // Reading through it here would throw and take the whole plugin down at startup, so
+            // put the guild back on the lowest tier and say so.
+            if (guild.getTier() == null) {
+                guild.setTier(getLowestGuildTier());
+                LoggingUtils.severe("The guild (" + guild.getName() + ") had no tier saved. To prevent issues, they've been automatically set to the lowest tier level on the server.");
+            }
             // Create a temp tier object for the guild
             GuildTier tier = getGuildTier(guild.getTier().getLevel());
             if (tier != null) {
@@ -167,13 +156,30 @@ public class GuildHandler {
             final GuildRole role = new GuildRole(name, perm, level);
 
             for (GuildRolePerm rolePerm : GuildRolePerm.values()) {
-                final String valuePath = path + rolePerm.name().replace("_", "-").toLowerCase();
+                final String valuePath = path + rolePermissionKey(rolePerm);
                 if (roleSec.getBoolean(valuePath)) {
                     role.addPerm(rolePerm);
                 }
             }
             this.roles.add(role);
         }
+    }
+
+    /**
+     * Derives the {@code roles.yml} key suffix for a single role permission.
+     *
+     * <p>Lowercases with {@link Locale#ROOT} rather than the default locale: on a Turkish-locale JVM
+     * {@code toLowerCase()} turns {@code "I"} into a dotless {@code "\u0131"}, so {@code INITIATE_WAR}
+     * was looked up as {@code roles.0.permissions.\u0131n\u0131tate-war}. No such key exists, so the
+     * permission was silently never granted to any role. {@code /guild war accept|challenge|deny}
+     * then rejected every player with an invalid-permission error and the defender list came back
+     * empty. The plugin ships a {@code tr-TR.yml}, so Turkish servers are a supported audience.
+     *
+     * @param rolePerm the permission to derive a key for
+     * @return the lowercased, dash-separated key suffix, for example {@code initiate-war}
+     */
+    static String rolePermissionKey(@NotNull final GuildRolePerm rolePerm) {
+        return rolePerm.name().replace("_", "-").toLowerCase(Locale.ROOT);
     }
 
     /**
@@ -198,6 +204,28 @@ public class GuildHandler {
                     .useBuffs(tierSec.getBoolean(key + ".use-buffs", true))
                     .permissions(tierSec.getStringList(key + ".permissions"))
                     .build());
+        }
+
+        warnAboutSuspiciousTiers();
+    }
+
+    /**
+     * Warns about a tier ladder that is likely a typo. Deliberately does not prevent the plugin
+     * from starting: an owner with an odd ladder should still get a working server, and refusing
+     * to load would be a worse outcome than the problem being reported.
+     */
+    private void warnAboutSuspiciousTiers() {
+        if (tiers.isEmpty()) {
+            LoggingUtils.severe("No guild tiers were loaded from tiers.yml. Every guild will be treated as being at the top tier.");
+            return;
+        }
+
+        final Set<Integer> levels = tiers.stream().map(GuildTier::getLevel).collect(Collectors.toSet());
+        if (levels.size() != tiers.size()) {
+            LoggingUtils.severe("tiers.yml contains more than one tier with the same level: "
+                    + tiers.stream().map(GuildTier::getLevel).collect(Collectors.toList())
+                    + ". Guilds upgrade to the first tier loaded for a level, so the others are unreachable. "
+                    + "Give every tier a distinct level.");
         }
     }
 
@@ -240,8 +268,7 @@ public class GuildHandler {
         try {
             guildsPlugin.getDatabase().getGuildAdapter().deleteGuild(guild.getId().toString());
         } catch (IOException e) {
-            LoggingUtils.warn("There was an error deleting a guild with the following uuid: " + guild.getId());
-            e.printStackTrace();
+            LoggingUtils.warn("There was an error deleting a guild with the following uuid: " + guild.getId(), e);
         }
     }
 
@@ -251,8 +278,7 @@ public class GuildHandler {
      * @param name the name of the guild to retrieve
      * @return the guild with the given name, or {@code null} if no such guild exists
      */
-    @Nullable
-    public Guild getGuild(@NotNull String name) {
+    @Nullable public Guild getGuild(@NotNull String name) {
         return guilds.values().stream().filter(guild -> ACFBukkitUtil.removeColors(guild.getName()).equals(name)).findFirst().orElse(null);
     }
 
@@ -262,8 +288,7 @@ public class GuildHandler {
      * @param p the offline player whose guild is being retrieved.
      * @return the guild object of the player, or null if the player is not in a guild.
      */
-    @Nullable
-    public Guild getGuild(@NotNull OfflinePlayer p) {
+    @Nullable public Guild getGuild(@NotNull OfflinePlayer p) {
         return getGuildByPlayerId(p.getUniqueId());
     }
 
@@ -273,8 +298,7 @@ public class GuildHandler {
      * @param uuid the UUID of the guild to retrieve
      * @return the guild object with the given UUID, or null if no guild with the given UUID is found
      */
-    @Nullable
-    public Guild getGuild(@NotNull UUID uuid) {
+    @Nullable public Guild getGuild(@NotNull UUID uuid) {
         return guilds.get(uuid);
     }
 
@@ -284,8 +308,7 @@ public class GuildHandler {
      * @param uuid the UUID of the player
      * @return the guild the player is a member of, or null if the player is not in a guild
      */
-    @Nullable
-    public Guild getGuildByPlayerId(@NotNull final UUID uuid) {
+    @Nullable public Guild getGuildByPlayerId(@NotNull final UUID uuid) {
         final UUID guildID = memberCache.get(uuid);
         return guildID == null ? null : guilds.get(guildID);
     }
@@ -296,8 +319,7 @@ public class GuildHandler {
      * @param code the invite code being checked
      * @return the guild that the code belongs to, or null if no such guild exists
      */
-    @Nullable
-    public Guild getGuildByCode(@NotNull String code) {
+    @Nullable public Guild getGuildByCode(@NotNull String code) {
         return guilds.values().stream().filter(guild -> guild.hasInviteCode(code)).findFirst().orElse(null);
     }
 
@@ -307,8 +329,7 @@ public class GuildHandler {
      * @param uuid the uuid of the player
      * @return the guild member object of the player or null
      */
-    @Nullable
-    public GuildMember getGuildMember(@NotNull final UUID uuid) {
+    @Nullable public GuildMember getGuildMember(@NotNull final UUID uuid) {
         final Guild guild = getGuildByPlayerId(uuid);
         return guild == null ? null : guild.getMember(uuid);
     }
@@ -329,8 +350,7 @@ public class GuildHandler {
      * @param level the level of the tier
      * @return the GuildTier object if found, or null if not found.
      */
-    @Nullable
-    public GuildTier getGuildTier(int level) {
+    @Nullable public GuildTier getGuildTier(int level) {
         return tiers.stream().filter(tier -> tier.getLevel() == level).findFirst().orElse(null);
     }
 
@@ -340,8 +360,7 @@ public class GuildHandler {
      * @param level the level of the role
      * @return the role object if found
      */
-    @Nullable
-    public GuildRole getGuildRole(int level) {
+    @Nullable public GuildRole getGuildRole(int level) {
         return roles.stream().filter(guildRole -> guildRole.getLevel() == level).findFirst().orElse(null);
     }
 
@@ -454,22 +473,58 @@ public class GuildHandler {
     }
 
     /**
-     * Returns the max tier level
+     * Returns the highest tier level configured in tiers.yml.
      *
-     * @return the max tier level
+     * <p>This used to return {@code tiers.size()}, the number of tiers. The two are only equal
+     * while the levels happen to be numbered 1..N, so the old value disagreed with
+     * {@link #getGuildTier(int)} the moment an owner deleted or renumbered a tier.
+     *
+     * @return the highest configured tier level, or 0 if no tiers are loaded
      */
     public int getMaxTierLevel() {
-        return tiers.size();
+        return tiers.stream().mapToInt(GuildTier::getLevel).max().orElse(0);
+    }
+
+    /**
+     * Returns the tier a guild would move to next, or null when it is already at the top.
+     *
+     * <p>The next tier is the lowest tier <em>above</em> the guild's current level, not the tier
+     * numbered exactly one higher. That keeps a ladder with a gap in it usable: with levels
+     * 1, 2, 4 and 5 a guild on 2 moves to 4. It also means {@link #upgradeTier(Guild)} can no
+     * longer be handed a level that does not exist and store null.
+     *
+     * @param guild the guild to check
+     * @return the tier above the guild's current one, or null if there is none
+     */
+    @Nullable public GuildTier getNextGuildTier(@NotNull Guild guild) {
+        return nextTierAbove(tiers, guild.getTier().getLevel());
+    }
+
+    /**
+     * Finds the lowest tier above the given level.
+     *
+     * @param tiers the configured tiers
+     * @param currentLevel the level to look above
+     * @return the next tier, or null if the level is already the highest
+     */
+    @Nullable static GuildTier nextTierAbove(@NotNull List<GuildTier> tiers, int currentLevel) {
+        return tiers.stream()
+                .filter(tier -> tier.getLevel() > currentLevel)
+                .min((a, b) -> Integer.compare(a.getLevel(), b.getLevel()))
+                .orElse(null);
     }
 
     /**
      * Checks if a guild has reached the maximum tier level.
      *
+     * <p>Derived from {@link #getNextGuildTier(Guild)} so this and the upgrade path can never
+     * disagree about whether a guild may upgrade.
+     *
      * @param guild the guild to check
      * @return true if the guild has reached the maximum tier level, false otherwise
      */
     public boolean isMaxTier(Guild guild) {
-        return guild.getTier().getLevel() >= getMaxTierLevel();
+        return getNextGuildTier(guild) == null;
     }
 
     /**
@@ -491,12 +546,23 @@ public class GuildHandler {
     }
 
     /**
-     * Upgrades the tier of a guild.
+     * Upgrades the tier of a guild to the next tier above its current one.
+     *
+     * <p>Refuses and logs when the guild is already at the top. This previously did
+     * {@code getGuildTier(level + 1)}, which returns null whenever that exact level is absent, and
+     * then assigned the null to the guild. Gson omits null fields, so the tier vanished from the
+     * saved JSON and the guild could not be loaded again.
      *
      * @param guild the guild whose tier will be upgraded
      */
     public void upgradeTier(Guild guild) {
-        guild.setTier(getGuildTier(guild.getTier().getLevel() + 1));
+        final GuildTier next = getNextGuildTier(guild);
+        if (next == null) {
+            LoggingUtils.warn("Guild " + guild.getId() + " is already at the highest tier (level "
+                    + guild.getTier().getLevel() + "). The upgrade was ignored.");
+            return;
+        }
+        guild.setTier(next);
     }
 
     /**
@@ -531,9 +597,14 @@ public class GuildHandler {
         // Deserialize the vaults and add them to the list
         guild.getVaults().forEach(v -> {
             try {
-                vaults.add(Serialization.deserializeInventory(v, settingsManager));
+                Inventory vault = Serialization.deserializeInventory(v, settingsManager);
+                if (vault == null) {
+                    LoggingUtils.warn("Unable to deserialize a vault inventory for guild " + guild.getId() + ". The invalid vault entry will be skipped.");
+                    return;
+                }
+                vaults.add(vault);
             } catch (InvalidConfigurationException e) {
-                e.printStackTrace();
+                LoggingUtils.warn("Unable to deserialize a vault inventory for guild " + guild.getId() + ". The invalid vault entry will be skipped.", e);
             }
         });
         // Add the guild's vaults to the cache
@@ -550,6 +621,10 @@ public class GuildHandler {
         if (guild.getVaults() == null) return;
         // Serialize the inventory objects in the cache and add them to a list.
         this.vaults.get(guild).forEach(v -> vaults.add(Serialization.serializeInventory(v)));
+        if (vaults.size() != guild.getVaults().size()) {
+            LoggingUtils.warn("Not every vault inventory of guild " + guild.getId() + " could be serialized. The stored vaults will be left untouched to avoid losing items.");
+            return;
+        }
         // Set the serialized inventory data to the guild's vaults list.
         guild.setVaults(vaults);
     }
@@ -700,7 +775,7 @@ public class GuildHandler {
      */
     public boolean blacklistCheck(String name, SettingsManager settingsManager) {
         if (settingsManager.getProperty(GuildSettings.BLACKLIST_SENSITIVE))
-            return settingsManager.getProperty(GuildSettings.BLACKLIST_WORDS).stream().anyMatch(s -> s.toLowerCase().contains(name));
+            return settingsManager.getProperty(GuildSettings.BLACKLIST_WORDS).stream().anyMatch(s -> s.toLowerCase(Locale.ROOT).contains(name));
         else
             return settingsManager.getProperty(GuildSettings.BLACKLIST_WORDS).stream().anyMatch(s -> s.equalsIgnoreCase(name));
     }
@@ -756,7 +831,7 @@ public class GuildHandler {
      * @return the guild upgrade ticket
      */
     public ItemStack getUpgradeTicket(SettingsManager settingsManager, int amount) {
-        ItemBuilder builder = new ItemBuilder(Material.valueOf(settingsManager.getProperty(TicketSettings.TICKET_MATERIAL)));
+        ItemBuilder builder = new ItemBuilder(resolveTicketMaterial(settingsManager));
         builder.setAmount(amount);
         builder.setName(StringUtils.color(settingsManager.getProperty(TicketSettings.TICKET_NAME)));
         builder.setLore(settingsManager.getProperty(TicketSettings.TICKET_LORE).stream().map(StringUtils::color).collect(Collectors.toList()));
@@ -770,13 +845,35 @@ public class GuildHandler {
      * @return the itemstack
      */
     public ItemStack matchTicket(SettingsManager settingsManager) {
-        ItemBuilder builder = new ItemBuilder(Material.valueOf(settingsManager.getProperty(TicketSettings.TICKET_MATERIAL)));
+        ItemBuilder builder = new ItemBuilder(resolveTicketMaterial(settingsManager));
         builder.setAmount(1);
         builder.setName(StringUtils.color(settingsManager.getProperty(TicketSettings.TICKET_NAME)));
         builder.setLore(settingsManager.getProperty(TicketSettings.TICKET_LORE).stream().map(StringUtils::color).collect(Collectors.toList()));
         return builder.build();
     }
 
+    /**
+     * Resolve the configured ticket material safely across Bukkit versions.
+     *
+     * @param settingsManager settings manager
+     * @return configured material or PAPER if invalid
+     */
+    private Material resolveTicketMaterial(SettingsManager settingsManager) {
+        final String rawMaterial = settingsManager.getProperty(TicketSettings.TICKET_MATERIAL);
+        if (rawMaterial != null && !rawMaterial.trim().isEmpty()) {
+            final Optional<XMaterial> matchedMaterial = XMaterial.matchXMaterial(rawMaterial.trim());
+
+            if (matchedMaterial.isPresent()) {
+                final Material material = matchedMaterial.get().get();
+                if (material != null && new ItemStack(material).getItemMeta() != null) {
+                    return material;
+                }
+            }
+        }
+
+        LoggingUtils.warn("Invalid or non-item ticket material configured at tickets.material: '" + rawMaterial + "'. Falling back to PAPER.");
+        return Material.PAPER;
+    }
 
     /**
      * Simple method to check if a guild is full or not
@@ -795,19 +892,9 @@ public class GuildHandler {
      */
     public void removePerms(final Permission permission, final OfflinePlayer offlinePlayer, final List<String> nodes) {
         if (settingsManager.getProperty(PluginSettings.RUN_VAULT_ASYNC)) {
-            Guilds.newChain().async(() -> {
-                for (final String node : nodes) {
-                    if (!node.equals("")) {
-                        permission.playerRemove(null, offlinePlayer, node);
-                    }
-                }
-            }).execute();
+            Guilds.newChain().async(() -> removePermsNow(permission, offlinePlayer, nodes)).execute();
         } else {
-            for (final String node : nodes) {
-                if (!node.equals("")) {
-                    permission.playerRemove(null, offlinePlayer, node);
-                }
-            }
+            removePermsNow(permission, offlinePlayer, nodes);
         }
     }
 
@@ -819,20 +906,96 @@ public class GuildHandler {
      */
     public void addPerms(final Permission permission, final OfflinePlayer offlinePlayer, final List<String> nodes) {
         if (settingsManager.getProperty(PluginSettings.RUN_VAULT_ASYNC)) {
-            Guilds.newChain().async(() -> {
-                for (final String node : nodes) {
-                    if (!node.equals("")) {
-                        permission.playerAdd(null, offlinePlayer, node);
-                    }
-                }
-            }).execute();
+            Guilds.newChain().async(() -> addPermsNow(permission, offlinePlayer, nodes)).execute();
         } else {
-            for (final String node : nodes) {
-                if (!node.equals("")) {
-                    permission.playerAdd(null, offlinePlayer, node);
-                }
+            addPermsNow(permission, offlinePlayer, nodes);
+        }
+    }
+
+    /**
+     * The body of {@link #removePerms}, with the dispatch to the executor already done.
+     *
+     * <p>Kept separate so {@link #applyTierPerms} can run several writes for one player in a single
+     * task, in a known order, rather than handing each one to the executor on its own.
+     *
+     * @param permission vault permissions
+     * @param offlinePlayer the player to modify
+     * @param nodes the permission nodes to remove
+     */
+    private static void removePermsNow(final Permission permission, final OfflinePlayer offlinePlayer, final List<String> nodes) {
+        for (final String node : nodes) {
+            if (!node.equals("")) {
+                permission.playerRemove(null, offlinePlayer, node);
             }
         }
+    }
+
+    /**
+     * The body of {@link #addPerms}, with the dispatch to the executor already done.
+     *
+     * @param permission vault permissions
+     * @param offlinePlayer the player to modify
+     * @param nodes the permission nodes to add
+     */
+    private static void addPermsNow(final Permission permission, final OfflinePlayer offlinePlayer, final List<String> nodes) {
+        for (final String node : nodes) {
+            if (!node.equals("")) {
+                permission.playerAdd(null, offlinePlayer, node);
+            }
+        }
+    }
+
+    /**
+     * Moves every member of a guild from the permissions of the tier it is leaving to the
+     * permissions of the tier it has just moved onto.
+     *
+     * <p>This is what the upgrade paths use, and it replaces two calls that used to sit either side
+     * of {@link #upgradeTier(Guild)}: {@link #removeGuildPermsFromAll} for the old tier, then
+     * {@link #addGuildPermsToAll} for the new one. Both of those go through {@link #addPerms} and
+     * {@link #removePerms}, which hand the work to a shared executor while
+     * {@code settings.run-vault-async} is on — and it is on by default. Nothing ordered the two
+     * dispatches, so the removal could land after the addition and leave the guild without a node
+     * the new tier grants. Every tier in the shipped {@code tiers.yml} grants the same placeholder
+     * node, so an upgrade from one to the other revoked that node and then re-granted it: a guild
+     * master who had just upgraded was refused the very commands the new tier was meant to open,
+     * and had to be handed the node through LuckPerms before they worked again.
+     *
+     * <p>Both halves now run inside one chain, per member, revoke before grant, so the last write
+     * to a node is always the grant. The tier being moved onto is read straight off the guild, which
+     * is what the old grant call already had in hand, rather than looked up again by level.
+     *
+     * @param permission vault permissions
+     * @param guild the guild whose members to move over
+     * @param from the tier the guild is leaving
+     */
+    public void applyTierPerms(final Permission permission, final Guild guild, final GuildTier from) {
+        final List<String> revoke = from.getPermissions();
+        final List<String> grant = guild.getTier().getPermissions();
+        if (revoke.isEmpty() && grant.isEmpty()) {
+            return;
+        }
+        final List<OfflinePlayer> members = guild.getAllAsPlayers();
+        if (settingsManager.getProperty(PluginSettings.RUN_VAULT_ASYNC)) {
+            Guilds.newChain().async(() -> members.forEach(member -> applyTierPermsTo(permission, member, revoke, grant))).execute();
+        } else {
+            members.forEach(member -> applyTierPermsTo(permission, member, revoke, grant));
+        }
+    }
+
+    /**
+     * Revokes the old tier's nodes and then grants the new tier's, for one member, in that order.
+     *
+     * <p>Order is the whole point: a node both tiers grant is removed and then re-granted, so
+     * reversing these two calls drops it.
+     *
+     * @param permission vault permissions
+     * @param member the member to move the permissions of
+     * @param revoke the nodes the tier being left granted
+     * @param grant the nodes the tier being moved onto grants
+     */
+    static void applyTierPermsTo(final Permission permission, final OfflinePlayer member, final List<String> revoke, final List<String> grant) {
+        removePermsNow(permission, member, revoke);
+        addPermsNow(permission, member, grant);
     }
 
     /**
@@ -1036,6 +1199,10 @@ public class GuildHandler {
     /**
      * Handles sending guild chat messages to the proper locations
      *
+     * <p>Must be called on the main thread. Resolves players through {@code Bukkit.getPlayer}, calls
+     * {@code Player#getDisplayName} and PlaceholderAPI, and iterates the spy list, which the main
+     * thread mutates. {@code ChatListener} hops across for exactly this reason.
+     *
      * @param guild   the guild of the player
      * @param player  the player sending the message
      * @param message the message the player is sending
@@ -1058,6 +1225,8 @@ public class GuildHandler {
 
     /**
      * Handles sending a chat message to all allies of a guild
+     *
+     * <p>Must be called on the main thread, for the same reasons as {@link #handleGuildChat}.
      *
      * @param guild   the guild sending the message
      * @param player  the player sending the message

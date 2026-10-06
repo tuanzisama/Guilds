@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.database.arenas;
 
 import me.glaremasters.guilds.Guilds;
@@ -28,6 +5,7 @@ import me.glaremasters.guilds.arena.Arena;
 import me.glaremasters.guilds.database.DatabaseAdapter;
 import me.glaremasters.guilds.database.DatabaseBackend;
 import me.glaremasters.guilds.database.arenas.provider.ArenaJsonProvider;
+import me.glaremasters.guilds.utils.LoggingUtils;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.File;
@@ -114,9 +92,19 @@ public class ArenaAdapter {
      */
     public void saveArenas(@NotNull Collection<Arena> arenas) throws IOException {
         List<String> savedIds = new ArrayList<>();
+        int failed = 0;
 
         for (Arena arena : arenas) {
-            saveArena(arena);
+            try {
+                saveArena(arena);
+            } catch (IOException | RuntimeException e) {
+                // The id is still recorded, and must stay recorded: the delete pass below removes any
+                // row not in savedIds, so dropping it here would delete the arena's existing row
+                // because its update failed.
+                failed++;
+                LoggingUtils.warn("Failed to save arena " + arena.getId() + "; the other arenas are still being saved.", e);
+            }
+
             savedIds.add(arena.getId().toString());
         }
 
@@ -125,6 +113,10 @@ public class ArenaAdapter {
             if (!keep) {
                 deleteArena(arenaId);
             }
+        }
+
+        if (failed > 0) {
+            LoggingUtils.severe(failed + " of " + arenas.size() + " arenas failed to save. See the warnings above.");
         }
 
         savedIds.clear();

@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.database;
 
 import ch.jalu.configme.SettingsManager;
@@ -31,9 +8,11 @@ import me.glaremasters.guilds.database.challenges.ChallengeAdapter;
 import me.glaremasters.guilds.database.cooldowns.CooldownAdapter;
 import me.glaremasters.guilds.database.guild.GuildAdapter;
 import me.glaremasters.guilds.utils.LoggingUtils;
-import org.bukkit.Bukkit;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.stream.Collectors;
 
 /**
  * A class that implements the DatabaseAdapter interface.
@@ -71,18 +50,11 @@ public final class DatabaseAdapter implements AutoCloseable {
      * @throws IOException if there is an issue setting up the backend database.
      */
     public DatabaseAdapter(Guilds guilds, SettingsManager settings, boolean doConnect) throws IOException {
-        String backendName = settings.getProperty(StorageSettings.STORAGE_TYPE).toLowerCase();
-        DatabaseBackend backend = DatabaseBackend.getByBackendName(backendName);
-
-        if (backend == null) {
-            backend = DatabaseBackend.JSON;
-        }
-
         this.guilds = guilds;
         this.settings = settings;
 
         if (doConnect) {
-            setUpBackend(backend);
+            setUpBackend(getConfiguredBackend());
         }
     }
 
@@ -100,10 +72,19 @@ public final class DatabaseAdapter implements AutoCloseable {
      * Establishes the database connection if it's not already established.
      */
     public void open() {
-        String backendName = settings.getProperty(StorageSettings.STORAGE_TYPE).toLowerCase();
-        DatabaseBackend backend = DatabaseBackend.getByBackendName(backendName);
-        if (databaseManager != null && !databaseManager.isConnected()) {
-            databaseManager = new DatabaseManager(settings, backend);
+        DatabaseBackend configuredBackend = getConfiguredBackend();
+
+        if (configuredBackend == DatabaseBackend.JSON || isConnected()) {
+            return;
+        }
+
+        try {
+            databaseManager = new DatabaseManager(settings, configuredBackend);
+        } catch (IOException ex) {
+            LoggingUtils.severe(
+                    "Failed to reopen the " + configuredBackend.getBackendName() + " database connection.",
+                    ex
+            );
         }
     }
 
@@ -171,16 +152,18 @@ public final class DatabaseAdapter implements AutoCloseable {
      * @throws IOException if an I/O error occurs during setup
      */
     private void setUpBackend(DatabaseBackend backend) throws IOException {
-        if (isConnected()) return;
-
-        if (backend != DatabaseBackend.JSON) {
-            this.databaseManager = new DatabaseManager(settings, backend);
-            this.sqlTablePrefix = this.settings.getProperty(StorageSettings.SQL_TABLE_PREFIX).toLowerCase();
+        if (this.backend == backend && isConnected()) {
+            return;
         }
 
         this.backend = backend;
 
         try {
+            if (backend != DatabaseBackend.JSON) {
+                this.databaseManager = new DatabaseManager(settings, backend);
+                this.sqlTablePrefix = this.settings.getProperty(StorageSettings.SQL_TABLE_PREFIX).toLowerCase(Locale.ROOT);
+            }
+
             // You may wish to create container(s) elsewhere, but this is an OK spot.
             // In JSON mode, this is equivalent to making the file.
             // In SQL mode, this is equivalent to creating the table.
@@ -196,9 +179,36 @@ public final class DatabaseAdapter implements AutoCloseable {
             this.cooldownAdapter = new CooldownAdapter(guilds, this);
             this.cooldownAdapter.createContainer();
         } catch (Exception ex) {
-            LoggingUtils.severe("There was an issue setting up the backend database. Shutting down to prevent further issues. If you are using MySQL, make sure your database server is on the latest version!");
-            ex.printStackTrace();
-            Bukkit.getServer().getPluginManager().disablePlugin(guilds);
+            throw new IOException(
+                    "There was an issue setting up the " + backend.getBackendName() +
+                            " backend. Shutting down to prevent further issues.",
+                    ex
+            );
         }
+    }
+
+    /**
+     * Gets the configured storage backend, defaulting to JSON if the configured value is invalid.
+     *
+     * @return the configured database backend
+     */
+    private DatabaseBackend getConfiguredBackend() {
+        String backendName = settings.getProperty(StorageSettings.STORAGE_TYPE);
+
+        if (backendName == null) {
+            return DatabaseBackend.JSON;
+        }
+
+        DatabaseBackend configuredBackend = DatabaseBackend.getByBackendName(backendName.toLowerCase(Locale.ROOT));
+
+        if (configuredBackend == null) {
+            LoggingUtils.warn("storage.storage-type must be one of "
+                    + Arrays.stream(DatabaseBackend.values()).map(DatabaseBackend::getBackendName).collect(Collectors.joining(", "))
+                    + " (found '" + backendName + "'). Falling back to " + DatabaseBackend.JSON.getBackendName()
+                    + ". Any data saved in the configured database will not be loaded.");
+            return DatabaseBackend.JSON;
+        }
+
+        return configuredBackend;
     }
 }

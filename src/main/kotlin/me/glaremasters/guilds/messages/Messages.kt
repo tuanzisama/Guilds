@@ -1,30 +1,8 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.messages
 
 import co.aikar.locales.MessageKey
 import co.aikar.locales.MessageKeyProvider
+import java.util.*
 
 /**
  * Created by GlareMasters
@@ -87,6 +65,7 @@ enum class Messages : MessageKeyProvider {
     ADMIN__PLAYER_ADDED,
     ADMIN__ADMIN_PLAYER_ADDED,
     ADMIN__ADMIN_GUILD_ADD,
+    ADMIN__CANT_REMOVE_MASTER,
     ADMIN__PLAYER_REMOVED,
     ADMIN__ADMIN_PLAYER_REMOVED,
     ADMIN__ADMIN_GUILD_REMOVE,
@@ -125,6 +104,7 @@ enum class Messages : MessageKeyProvider {
 
     TRANSFER__SUCCESS,
     TRANSFER__NEWMASTER,
+    TRANSFER__FAILED,
 
     UPGRADE__TIER_MAX,
     UPGRADE__NOT_ENOUGH_MEMBERS,
@@ -260,8 +240,8 @@ enum class Messages : MessageKeyProvider {
     ARENA__POSITION_NOT_SET,
     ARENA__TELEPORTED_TO_SELECTION,
     ARENA__ALL_FULL,
-    ARENA__LOCATION__ISSUE__CHALLENGER,
-    ARENA__LOCATION__ISSUE__DEFENDER,
+    ARENA__LOCATION_ISSUE_CHALLENGER,
+    ARENA__LOCATION_ISSUE_DEFENDER,
 
     WAR__NO_DEFENDERS,
     WAR__CHALLENGE_SENT,
@@ -301,8 +281,13 @@ enum class Messages : MessageKeyProvider {
 
     /**
      * Message keys that grab from the config to send messages
+     *
+     * [Locale.ROOT] is deliberate. With the default locale, a Turkish-locale JVM lowercases `"I"`
+     * to a dotless `"ı"`, which turns `INVITE__ALREADY_INVITED` into `ınvıte.already-ınvıted`. No
+     * such key exists in the language files, so every invite message silently falls back to
+     * showing the raw key.
      */
-    private val key = MessageKey.of(name.toLowerCase().replace("__", ".").replace("_", "-"))
+    private val key = MessageKey.of(name.lowercase(Locale.ROOT).replace("__", ".").replace("_", "-"))
 
     /**
      * Get the message get from the config

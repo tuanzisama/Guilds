@@ -1,29 +1,7 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.listeners;
 
 import ch.jalu.configme.SettingsManager;
+import com.cryptomorin.xseries.XPotion;
 import me.glaremasters.guilds.challenges.ChallengeHandler;
 import me.glaremasters.guilds.configuration.sections.GuildSettings;
 import me.glaremasters.guilds.guild.Guild;
@@ -43,11 +21,6 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.PotionSplashEvent;
 import org.bukkit.potion.PotionEffect;
-import org.bukkit.potion.PotionEffectType;
-
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
 
 /**
  * Created by GlareMasters
@@ -59,7 +32,6 @@ public class EntityListener implements Listener {
     private final GuildHandler guildHandler;
     private final SettingsManager settingsManager;
     private final ChallengeHandler challengeHandler;
-    private final Set<PotionEffectType> bad = new HashSet<>(Arrays.asList(PotionEffectType.BLINDNESS, PotionEffectType.WITHER, PotionEffectType.SLOW_DIGGING, PotionEffectType.WEAKNESS, PotionEffectType.SLOW, PotionEffectType.POISON));
 
     public EntityListener(GuildHandler guildHandler, SettingsManager settingsManager, ChallengeHandler challengeHandler) {
         this.guildHandler = guildHandler;
@@ -75,6 +47,10 @@ public class EntityListener implements Listener {
     @EventHandler
     public void onMobDamage(EntityDamageByEntityEvent event) {
         if (event.isCancelled()) {
+            return;
+        }
+
+        if (!(event.getEntity() instanceof Monster)) {
             return;
         }
 
@@ -99,6 +75,7 @@ public class EntityListener implements Listener {
      *
      * @param event The EntityDeathEvent that triggered the method.
      */
+    @EventHandler
     public void onMobDeath(EntityDeathEvent event) {
         if (!(event.getEntity() instanceof Monster)) {
             return;
@@ -138,7 +115,7 @@ public class EntityListener implements Listener {
         final Player damager = (Player) event.getDamager();
 
         // Check if they are in the same guild and have permission to damage their guild members
-        if (guildHandler.isSameGuild(player, damager) && !player.hasPermission("guilds.ffa.guild")) {
+        if (guildHandler.isSameGuild(player, damager) && !damager.hasPermission("guilds.ffa.guild")) {
             event.setCancelled(!settingsManager.getProperty(GuildSettings.GUILD_DAMAGE));
             return;
         }
@@ -153,7 +130,7 @@ public class EntityListener implements Listener {
         }
 
         // Check if they are allies and have permission to damage allies
-        if (guildHandler.isAlly(player, damager) && !player.hasPermission("guilds.ffa.ally")) {
+        if (guildHandler.isAlly(player, damager) && !damager.hasPermission("guilds.ffa.ally")) {
             event.setCancelled(!settingsManager.getProperty(GuildSettings.ALLY_DAMAGE));
         }
     }
@@ -183,13 +160,13 @@ public class EntityListener implements Listener {
         final Player damager = (Player) projectile.getShooter();
 
         // Check if they are in the same guild
-        if (guildHandler.isSameGuild(damaged, damager) && damaged != damager && !damaged.hasPermission("guilds.ffa.guild")) {
+        if (guildHandler.isSameGuild(damaged, damager) && damaged != damager && !damager.hasPermission("guilds.ffa.guild")) {
             event.setCancelled(!settingsManager.getProperty(GuildSettings.GUILD_DAMAGE));
             return;
         }
 
         // Check if they are allies
-        if (guildHandler.isAlly(damaged, damager) && !damaged.hasPermission("guilds.ffa.ally")) {
+        if (guildHandler.isAlly(damaged, damager) && !damager.hasPermission("guilds.ffa.ally")) {
             event.setCancelled(!settingsManager.getProperty(GuildSettings.ALLY_DAMAGE));
         }
     }
@@ -214,14 +191,14 @@ public class EntityListener implements Listener {
         final Player damager = (Player) arrow.getShooter();
 
         // Check if they are in the same guild
-        if (guildHandler.isSameGuild(damagee, damager) && !damagee.hasPermission("guilds.ffa.guild")) {
+        if (guildHandler.isSameGuild(damagee, damager) && !damager.hasPermission("guilds.ffa.guild")) {
             arrow.setFireTicks(0);
             event.setCancelled(!settingsManager.getProperty(GuildSettings.GUILD_DAMAGE));
             return;
         }
 
         // Check if they are allies
-        if (guildHandler.isAlly(damagee, damager) && !damagee.hasPermission("guilds.ffa.ally")) {
+        if (guildHandler.isAlly(damagee, damager) && !damager.hasPermission("guilds.ffa.ally")) {
             arrow.setFireTicks(0);
             event.setCancelled(!settingsManager.getProperty(GuildSettings.ALLY_DAMAGE));
         }
@@ -262,7 +239,7 @@ public class EntityListener implements Listener {
      */
     private boolean isHarmfulPotion(final ThrownPotion potion) {
         for (final PotionEffect effect : potion.getEffects()) {
-            if (bad.contains(effect.getType())) {
+            if (XPotion.DEBUFFS.contains(XPotion.matchXPotion(effect.getType()))) {
                 return true;
             }
         }

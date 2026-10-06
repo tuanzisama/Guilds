@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.challenges;
 
 import ch.jalu.configme.SettingsManager;
@@ -35,6 +12,7 @@ import me.glaremasters.guilds.guild.GuildChallenge;
 import me.glaremasters.guilds.guild.GuildMember;
 import me.glaremasters.guilds.guild.GuildRolePerm;
 import me.glaremasters.guilds.messages.Messages;
+import me.glaremasters.guilds.utils.LoggingUtils;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
@@ -43,10 +21,12 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -80,7 +60,7 @@ public class ChallengeHandler {
                 challenges.add(challenge);
             }
         } catch (IOException ex) {
-            ex.printStackTrace();
+            LoggingUtils.severe("An error occurred while loading guild challenges.", ex);
         }
     }
 
@@ -176,7 +156,7 @@ public class ChallengeHandler {
      */
     public List<Player> getOnlineDefenders(@NotNull Guild guild) {
         List<GuildMember> members = guild.getOnlineMembers().stream().filter(m -> m.getRole().hasPerm(GuildRolePerm.INITIATE_WAR)).collect(Collectors.toList());
-        return members.stream().map(m -> Bukkit.getPlayer(m.getUuid())).collect(Collectors.toList());
+        return members.stream().map(m -> Bukkit.getPlayer(m.getUuid())).filter(Objects::nonNull).collect(Collectors.toList());
     }
 
     /**
@@ -238,6 +218,11 @@ public class ChallengeHandler {
      * @param location the location to send them to
      */
     public void sendToArena(@NotNull Map<UUID, String> players, @Nullable Location location) {
+        if (location == null) {
+            LoggingUtils.warn("Unable to send war players to an arena because the arena location is not configured.");
+            return;
+        }
+
         players.keySet().forEach(p -> {
             Player player = Bukkit.getPlayer(p);
             if (player != null) {
@@ -276,8 +261,17 @@ public class ChallengeHandler {
     public void teleportRemaining(@NotNull GuildChallenge challenge) {
         getAllPlayersAlive(challenge).forEach((key, value) -> {
             final Location location = ACFBukkitUtil.stringToLocation(value);
-            final Player player = Bukkit.getPlayer(key);
-            Bukkit.getScheduler().runTaskLater(guilds, () -> player.teleport(location), 1L);
+            if (location == null) {
+                LoggingUtils.warn("Unable to teleport war player " + key + " back because their saved location is invalid.");
+                return;
+            }
+
+            Bukkit.getScheduler().runTaskLater(guilds, () -> {
+                final Player player = Bukkit.getPlayer(key);
+                if (player != null) {
+                    player.teleport(location);
+                }
+            }, 1L);
         });
     }
 
@@ -352,8 +346,13 @@ public class ChallengeHandler {
                 message = Messages.WAR__PLAYER_KILLED_OTHER;
                 break;
         }
-        getAllPlayersAlive(challenge).keySet().forEach(p -> guilds.getCommandManager().getCommandIssuer(Bukkit.getPlayer(p))
-                .sendInfo(message, "{player}", player.getName(), "{killer}", killer.getName()));
+        getAllPlayersAlive(challenge).keySet().forEach(p -> {
+            final Player target = Bukkit.getPlayer(p);
+            if (target != null) {
+                guilds.getCommandManager().getCommandIssuer(target)
+                        .sendInfo(message, "{player}", player.getName(), "{killer}", killer.getName());
+            }
+        });
     }
 
     /**
@@ -362,25 +361,42 @@ public class ChallengeHandler {
      * @param challenge the challenge
      */
     public void giveRewards(@NotNull SettingsManager settingsManager, @NotNull GuildChallenge challenge) {
-        List<UUID> winners;
-        UUID teamWinner = challenge.getWinner().getId();
-        if (teamWinner == challenge.getChallenger().getId()) {
-            winners = challenge.getChallengePlayers();
-        } else {
-            winners = challenge.getDefendPlayers();
-        }
-        List<String> commands = settingsManager.getProperty(WarSettings.WAR_REWARDS);
         if (settingsManager.getProperty(WarSettings.WAR_REWARDS_ENABLED)) {
-            winners.forEach(p -> {
-                Player player = Bukkit.getPlayer(p);
-                if (player != null) {
-                    commands.forEach(c -> {
-                        c = c.replace("{player}", player.getName());
-                        Bukkit.getServer().dispatchCommand(Bukkit.getServer().getConsoleSender(), c);
-                    });
-                }
-            });
+            dispatchRewards(rosterOf(challenge.getWinner(), challenge), settingsManager.getProperty(WarSettings.WAR_REWARDS));
         }
+    }
+
+    /**
+     * Give the rewards to the loser
+     * @param settingsManager the settings manager
+     * @param challenge the challenge
+     */
+    public void giveLoserRewards(@NotNull SettingsManager settingsManager, @NotNull GuildChallenge challenge) {
+        if (settingsManager.getProperty(WarSettings.WAR_LOSER_REWARDS_ENABLED)) {
+            dispatchRewards(rosterOf(challenge.getLoser(), challenge), settingsManager.getProperty(WarSettings.WAR_LOSER_REWARDS));
+        }
+    }
+
+    /**
+     * Get the players that fought on the given Guild's side
+     * @param guild the guild to look up
+     * @param challenge the challenge
+     * @return the roster that belongs to the guild
+     */
+    @NotNull List<UUID> rosterOf(@NotNull Guild guild, @NotNull GuildChallenge challenge) {
+        return guild.getId().equals(challenge.getChallenger().getId())
+                ? challenge.getChallengePlayers()
+                : challenge.getDefendPlayers();
+    }
+
+    private void dispatchRewards(@NotNull List<UUID> roster, @NotNull List<String> commands) {
+        roster.forEach(p -> {
+            Player player = Bukkit.getPlayer(p);
+            if (player != null) {
+                commands.forEach(c ->
+                        Bukkit.getServer().dispatchCommand(Bukkit.getServer().getConsoleSender(), c.replace("{player}", player.getName())));
+            }
+        });
     }
 
     /**
@@ -422,6 +438,7 @@ public class ChallengeHandler {
             teleportRemaining(challenge);
             // Run the reward commands
             giveRewards(settingsManager, challenge);
+            giveLoserRewards(settingsManager, challenge);
             // Execute post war commands
             if (settingsManager.getProperty(WarSettings.ENABLE_POST_CHALLENGE_COMMANDS)) {
                 settingsManager.getProperty(WarSettings.POST_CHALLENGE_COMMANDS).forEach(c -> {
@@ -437,7 +454,7 @@ public class ChallengeHandler {
                 // Save the details about the challenge
                saveData();
             } catch (IOException e) {
-                e.printStackTrace();
+                LoggingUtils.severe("An error occurred while saving guild challenge data after a war ended.", e);
             }
         }
     }
@@ -468,7 +485,18 @@ public class ChallengeHandler {
     }
 
 
+    /**
+     * Read only view of every tracked challenge, completed ones included.
+     *
+     * <p>This is a live view, not a copy: reads follow later changes, and iteration is only as safe
+     * as the underlying collection is. What it does stop is writes. Pushing a challenge into this set
+     * behind the handler's back skips the arena reservation and the expiry task that
+     * {@code /guild war challenge} sets up around {@link #addChallenge(GuildChallenge)}, which leaves
+     * an arena marked as in use for the rest of the session with nothing scheduled to release it.
+     *
+     * @return unmodifiable view of the tracked challenges
+     */
     public Set<GuildChallenge> getChallenges() {
-        return this.challenges;
+        return Collections.unmodifiableSet(challenges);
     }
 }

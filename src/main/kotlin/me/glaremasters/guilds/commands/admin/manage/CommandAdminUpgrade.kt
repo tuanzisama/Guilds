@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.commands.admin.manage
 
 import ch.jalu.configme.SettingsManager
@@ -50,13 +27,15 @@ internal class CommandAdminUpgrade : BaseCommand() {
     @CommandCompletion("@guilds")
     @Syntax("%guild")
     fun upgrade(issuer: CommandIssuer, @Flags("other") @Values("@guilds") guild: Guild) {
-        if (guildHandler.isMaxTier(guild)) {
+        // Resolve the target tier before touching permissions. upgradeTier refuses when there is no
+        // tier above this one, so there is nothing left to guard against here.
+        if (guildHandler.getNextGuildTier(guild) == null) {
             throw ExpectationNotMet(Messages.UPGRADE__TIER_MAX)
         }
 
-        guildHandler.removeGuildPermsFromAll(permission, guild)
+        val previousTier = guild.tier
         guildHandler.upgradeTier(guild)
-        guildHandler.addGuildPermsToAll(permission, guild)
+        guildHandler.applyTierPerms(permission, guild, previousTier)
 
         currentCommandIssuer.sendInfo(Messages.ADMIN__ADMIN_UPGRADE, "{guild}", guild.name)
         guild.sendMessage(currentCommandManager, Messages.ADMIN__ADMIN_GUILD_UPGRADE)

@@ -1,34 +1,13 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.placeholders
 
 import me.clip.placeholderapi.expansion.PlaceholderExpansion
 import me.glaremasters.guilds.Guilds
 import me.glaremasters.guilds.exte.rounded
 import me.glaremasters.guilds.guild.GuildHandler
+import me.glaremasters.guilds.guis.guildMasterName
 import me.glaremasters.guilds.utils.EconomyUtils
 import org.bukkit.entity.Player
+import java.util.*
 
 class PlaceholderAPI(private val guildHandler: GuildHandler) : PlaceholderExpansion() {
 
@@ -55,7 +34,8 @@ class PlaceholderAPI(private val guildHandler: GuildHandler) : PlaceholderExpans
         val api = Guilds.getApi() ?: return ""
 
         // Check formatted here because this needs to return before we check the guild
-        if (arg.toLowerCase() == "formatted") {
+        // Locale.ROOT: on a Turkish-locale JVM the default locale lowercases "I" to a dotless "ı"
+        if (arg.lowercase(Locale.ROOT) == "formatted") {
             return guildHandler.getFormattedPlaceholder(player)
         }
 
@@ -166,10 +146,22 @@ class PlaceholderAPI(private val guildHandler: GuildHandler) : PlaceholderExpans
         }
 
         val guild = api.getGuild(player) ?: return ""
-        return when (arg.toLowerCase()) {
+
+        // "member_count" also starts with "member_", so this branch has to check the suffix is
+        // numeric before it claims the arg. Without that, the "member_count" case in the when below
+        // is unreachable and %guilds_member_count% resolves to an empty string.
+        if (arg.startsWith("member_") && arg.removePrefix("member_").all(Char::isDigit)) {
+            val position = arg.removePrefix("member_").toIntOrNull() ?: return ""
+            val member = guild.members.toList().getOrNull(position - 1) ?: return ""
+            return member.name ?: ""
+        }
+
+        // Locale.ROOT: on a Turkish-locale JVM the default locale lowercases "I" to a dotless "ı", so
+        // "ID" would miss the branch below and fall through to ""
+        return when (arg.lowercase(Locale.ROOT)) {
             "id" -> guild.id.toString()
             "name" -> guild.name
-            "master" -> guild.guildMaster.asOfflinePlayer.name.toString()
+            "master" -> guild.guildMasterName()
             "member_count" -> guild.members.size.toString()
             "prefix" -> guild.prefix
             "members_online" -> guild.onlineMembers.size.toString()

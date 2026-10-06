@@ -1,30 +1,8 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.commands.admin.manage
 
 import ch.jalu.configme.SettingsManager
 import co.aikar.commands.BaseCommand
+import co.aikar.commands.CommandIssuer
 import co.aikar.commands.annotation.CommandAlias
 import co.aikar.commands.annotation.CommandCompletion
 import co.aikar.commands.annotation.CommandPermission
@@ -57,14 +35,24 @@ internal class CommandAdminTransfer : BaseCommand() {
     @Description("{@@descriptions.admin-transfer}")
     @CommandCompletion("@guilds @members-admin")
     @Syntax("%guild %new-master")
-    fun transfer(player: Player, @Flags("other") @Values("@guilds") guild: Guild, @Values("@members-admin") @Single master: String) {
+    fun transfer(issuer: CommandIssuer, @Flags("other") @Values("@guilds") guild: Guild, @Values("@members-admin") @Single master: String) {
         val transfer = Bukkit.getOfflinePlayer(master)
 
         if (guild.guildMaster.uuid == transfer.uniqueId) {
             throw ExpectationNotMet(Messages.ERROR__TRANSFER_SAME_PERSON)
         }
 
-        guild.transferGuildAdmin(transfer, guildHandler, permission)
+        if (guild.getMember(transfer.uniqueId) == null) {
+            throw ExpectationNotMet(Messages.ERROR__PLAYER_NOT_IN_GUILD, "{player}", transfer.name.toString())
+        }
+
+        // tryTransferGuildAdmin refuses rather than half-applying, so a false here is a real
+        // failure to report instead of a transfer that silently did not happen. It logs the reason
+        // to the console; this is the player-facing half.
+        if (!guild.tryTransferGuildAdmin(transfer, guildHandler, permission)) {
+            throw ExpectationNotMet(Messages.TRANSFER__FAILED)
+        }
+
         currentCommandIssuer.sendInfo(Messages.TRANSFER__SUCCESS)
     }
 }

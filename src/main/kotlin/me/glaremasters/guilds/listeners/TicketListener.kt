@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.listeners
 
 import ch.jalu.configme.SettingsManager
@@ -53,7 +30,9 @@ class TicketListener(private val guilds: Guilds, private val guildHandler: Guild
             return
         }
 
-        if (guildHandler.isMaxTier(guild)) {
+        // Resolve the target tier before the ticket is taken. The ticket used to be consumed first, so a
+        // guild that could not be upgraded lost the ticket and the upgrade at the same time.
+        if (guildHandler.getNextGuildTier(guild) == null) {
             guilds.commandManager.getCommandIssuer(player).sendInfo(Messages.UPGRADE__TIER_MAX)
             return
         }
@@ -61,8 +40,8 @@ class TicketListener(private val guilds: Guilds, private val guildHandler: Guild
         if (interactItem.amount > 1) interactItem.amount = interactItem.amount - 1 else player.inventory.setItemInHand(ItemStack(Material.AIR))
         guilds.commandManager.getCommandIssuer(player).sendInfo(Messages.UPGRADE__SUCCESS)
 
-        guildHandler.removeGuildPermsFromAll(guilds.permissions, guild)
+        val previousTier = guild.tier
         guildHandler.upgradeTier(guild)
-        guildHandler.addGuildPermsToAll(guilds.permissions, guild)
+        guildHandler.applyTierPerms(guilds.permissions, guild, previousTier)
     }
 }

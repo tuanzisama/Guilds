@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.database.guild;
 
 import me.glaremasters.guilds.Guilds;
@@ -28,11 +5,11 @@ import me.glaremasters.guilds.database.DatabaseAdapter;
 import me.glaremasters.guilds.database.DatabaseBackend;
 import me.glaremasters.guilds.database.guild.provider.GuildJsonProvider;
 import me.glaremasters.guilds.guild.Guild;
+import me.glaremasters.guilds.utils.LoggingUtils;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
@@ -77,9 +54,35 @@ public class GuildAdapter {
         return provider.getGuild(sqlTablePrefix, id);
     }
 
+    /**
+     * Saves every guild, one record at a time.
+     *
+     * <p>A record that fails to save is logged with its id and the cause, then the batch carries on.
+     * Previously the first failure propagated out of the loop and every guild after it was silently
+     * never written. That is only survivable while saving periodically, but this is also the
+     * shutdown save, where it means the remaining guilds are lost for good.
+     *
+     * <p>Reports a summary once at the end rather than rethrowing: the caller has no better recovery
+     * than continuing, and rethrowing is what used to abandon the rest of the batch.
+     *
+     * @param guilds the guilds to save
+     * @throws IOException retained for source compatibility; a single failed record no longer aborts
+     *         the batch, so this is not thrown for a per-record failure
+     */
     public void saveGuilds(@NotNull Collection<Guild> guilds) throws IOException {
+        int failed = 0;
+
         for (Guild guild : guilds) {
-            saveGuild(guild);
+            try {
+                saveGuild(guild);
+            } catch (IOException | RuntimeException e) {
+                failed++;
+                LoggingUtils.warn("Failed to save guild " + guild.getId() + "; the other guilds are still being saved.", e);
+            }
+        }
+
+        if (failed > 0) {
+            LoggingUtils.severe(failed + " of " + guilds.size() + " guilds failed to save. See the warnings above.");
         }
     }
 

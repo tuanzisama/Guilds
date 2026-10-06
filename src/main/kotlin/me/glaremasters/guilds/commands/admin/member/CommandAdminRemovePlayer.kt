@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.commands.admin.member
 
 import ch.jalu.configme.SettingsManager
@@ -42,7 +19,8 @@ import net.milkbowl.vault.permission.Permission
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 
-// todo Fix the logic on this because what if you force remove the guild master?
+// An admin cannot remove a guild's own master: the guild would be left with an owner who is not in
+// it, which nothing can recover from. Transfer the guild first, or remove the guild itself.
 @CommandAlias("%guilds")
 internal class CommandAdminRemovePlayer : BaseCommand() {
     @Dependency lateinit var guilds: Guilds
@@ -64,6 +42,13 @@ internal class CommandAdminRemovePlayer : BaseCommand() {
             return
         }
 
+        // Checked before anything is mutated. Removing the master used to leave guildMaster
+        // pointing at somebody who is no longer a member, after which every later read of it threw
+        // and the guild could never be transferred to anyone again.
+        if (guild.isMaster(user)) {
+            throw ExpectationNotMet(Messages.ADMIN__CANT_REMOVE_MASTER, "{player}", user.name ?: name, "{guild}", guild.name)
+        }
+
         ClaimUtils.kickMember(user, player, guild, settingsManager)
 
         guildHandler.removeRolePerm(permission, user)
@@ -73,7 +58,7 @@ internal class CommandAdminRemovePlayer : BaseCommand() {
         guildHandler.removeFromMemberCache(user.uniqueId)
 
         if (user.isOnline) {
-            currentCommandManager.getCommandIssuer(user).sendInfo(Messages.ADMIN__PLAYER_REMOVED)
+            currentCommandManager.getCommandIssuer(user).sendInfo(Messages.ADMIN__PLAYER_REMOVED, "{guild}", guild.name)
         }
 
         guildHandler.removeFromChat(user.uniqueId)

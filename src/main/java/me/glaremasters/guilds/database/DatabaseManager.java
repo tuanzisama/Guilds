@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.database;
 
 import ch.jalu.configme.SettingsManager;
@@ -30,22 +7,24 @@ import me.glaremasters.guilds.configuration.sections.StorageSettings;
 import org.jdbi.v3.core.Jdbi;
 import org.jdbi.v3.sqlobject.SqlObjectPlugin;
 
+import java.io.IOException;
+import java.util.Arrays;
+
 /**
  * A class for managing the database connection using JDBI and HikariDataSource.
  */
 public class DatabaseManager {
     private Jdbi jdbi;
     private HikariDataSource hikari;
-    private String dataSourceName;
 
     /**
      * Constructs a DatabaseManager object and sets up a database connection using the given settings manager and backend.
      *
      * @param settingsManager the settings manager that provides the database connection information
      * @param backend         the type of database backend to use
+     * @throws IOException if the database connection cannot be configured or opened
      */
-    public DatabaseManager(SettingsManager settingsManager, DatabaseBackend backend) {
-        // Create a new HikariConfig object
+    public DatabaseManager(SettingsManager settingsManager, DatabaseBackend backend) throws IOException {
         HikariConfig config = new HikariConfig();
         config.setMaximumPoolSize(settingsManager.getProperty(StorageSettings.SQL_POOL_SIZE));
         config.setMinimumIdle(settingsManager.getProperty(StorageSettings.SQL_POOL_IDLE));
@@ -53,90 +32,53 @@ public class DatabaseManager {
         config.setConnectionTimeout(settingsManager.getProperty(StorageSettings.SQL_POOL_TIMEOUT));
 
         String databaseName = settingsManager.getProperty(StorageSettings.SQL_DATABASE);
+
         switch (backend) {
             case MYSQL:
                 config.setPoolName("Guilds MySQL Connection Pool");
-                if (dataSourceName == null) {
-                    tryDataSourceName("com.mysql.jdbc.jdbc2.optional.MysqlDataSource");
-                }
-                if (dataSourceName == null) {
-                    tryDataSourceName("com.mysql.cj.jdbc.MysqlDataSource");
-                }
-                config.setDataSourceClassName(dataSourceName);
-                config.addDataSourceProperty("serverName", settingsManager.getProperty(StorageSettings.SQL_HOST));
-                config.addDataSourceProperty("port", settingsManager.getProperty(StorageSettings.SQL_PORT));
-                config.addDataSourceProperty("databaseName", databaseName);
-                config.addDataSourceProperty("user", settingsManager.getProperty(StorageSettings.SQL_USERNAME));
-                config.addDataSourceProperty("password", settingsManager.getProperty(StorageSettings.SQL_PASSWORD));
+                // Connector jars older than 8.0 have no com.mysql.cj package, so fall back to the
+                // legacy class name when the modern one is not on the classpath.
+                config.setDataSourceClassName(requireDataSourceClassName(
+                        backend,
+                        "com.mysql.cj.jdbc.MysqlDataSource",
+                        "com.mysql.jdbc.jdbc2.optional.MysqlDataSource"
+                ));
                 config.addDataSourceProperty("useSSL", settingsManager.getProperty(StorageSettings.SQL_ENABLE_SSL));
-
-                if (settingsManager.getProperty(StorageSettings.UTF8)) {
-                    config.addDataSourceProperty("characterEncoding", "utf8");
-                }
+                applySqlProperties(config, settingsManager, databaseName);
                 break;
             case SQLITE:
                 config.setPoolName("Guilds SQLite Connection Pool");
+                config.setDriverClassName(requireDriverClassName(backend, "org.sqlite.JDBC"));
                 config.setJdbcUrl("jdbc:sqlite:plugins/Guilds/guilds.db");
                 break;
             case MARIADB:
                 config.setPoolName("Guilds MariaDB Connection Pool");
-                config.setDataSourceClassName("org.mariadb.jdbc.MariaDbDataSource");
-                config.addDataSourceProperty("serverName", settingsManager.getProperty(StorageSettings.SQL_HOST));
-                config.addDataSourceProperty("port", settingsManager.getProperty(StorageSettings.SQL_PORT));
-                config.addDataSourceProperty("databaseName", databaseName);
-                config.addDataSourceProperty("user", settingsManager.getProperty(StorageSettings.SQL_USERNAME));
-                config.addDataSourceProperty("password", settingsManager.getProperty(StorageSettings.SQL_PASSWORD));
-
-                if (settingsManager.getProperty(StorageSettings.UTF8)) {
-                    config.addDataSourceProperty("characterEncoding", "utf8");
-                }
+                config.setDataSourceClassName(requireDataSourceClassName(
+                        backend,
+                        "org.mariadb.jdbc.MariaDbDataSource"
+                ));
+                applySqlProperties(config, settingsManager, databaseName);
                 break;
             default:
                 throw new IllegalArgumentException("Invalid backend for DatabaseManager setup: " + backend.getBackendName());
         }
 
-        HikariDataSource hikari;
         try {
             hikari = new HikariDataSource(config);
         } catch (Exception ex) {
-            // TODO: send that the database connection has failed; probably must check 1) their host or 2) the settings
-            return;
+            throw new IOException(
+                    "Failed to open " + backend.getBackendName() + " database connection. " +
+                            getConnectionDetails(settingsManager, backend, config),
+                    ex
+            );
         }
 
-        jdbi = Jdbi.create(hikari);
-        jdbi.installPlugin(new SqlObjectPlugin());
-
-        this.hikari = hikari;
+        this.jdbi = Jdbi.create(hikari);
+        this.jdbi.installPlugin(new SqlObjectPlugin());
     }
 
     /**
-     * Helper method to try a data source until the right one is found
-     *
-     * @param className the class to try
-     */
-    public void tryDataSourceName(final String className) {
-        try {
-            dataSourceName(className);
-        } catch (Exception ignored) {
-        }
-    }
-
-    /**
-     * Helper method to check if a class exists to use for mysql data sourcing
-     *
-     * @param className the class to check
-     */
-    private void dataSourceName(final String className) {
-        try {
-            Class.forName(className);
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(e);
-        }
-        this.dataSourceName = className;
-    }
-
-    /**
-     * Returns the status of the connection to the MySQL database.
+     * Returns the status of the connection to the SQL database.
      *
      * @return true if connected, false otherwise
      */
@@ -150,5 +92,88 @@ public class DatabaseManager {
 
     public HikariDataSource getHikari() {
         return hikari;
+    }
+
+    /**
+     * Applies the connection properties every MySQL-family backend shares. MariaDB's driver takes
+     * the same property names as MySQL's, so only the datasource class and the pool name differ
+     * between the two backends.
+     *
+     * @param config          the config to add the connection properties to
+     * @param settingsManager the settings manager that provides the connection properties
+     * @param databaseName    the name of the database to connect to
+     */
+    private static void applySqlProperties(
+            HikariConfig config,
+            SettingsManager settingsManager,
+            String databaseName
+    ) {
+        config.addDataSourceProperty("serverName", settingsManager.getProperty(StorageSettings.SQL_HOST));
+        config.addDataSourceProperty("port", settingsManager.getProperty(StorageSettings.SQL_PORT));
+        config.addDataSourceProperty("databaseName", databaseName);
+        config.addDataSourceProperty("user", settingsManager.getProperty(StorageSettings.SQL_USERNAME));
+        config.addDataSourceProperty("password", settingsManager.getProperty(StorageSettings.SQL_PASSWORD));
+
+        if (settingsManager.getProperty(StorageSettings.UTF8)) {
+            config.addDataSourceProperty("characterEncoding", "utf8");
+        }
+    }
+
+    private static String requireDataSourceClassName(DatabaseBackend backend, String... classNames) throws IOException {
+        return requireClassName("datasource", backend, classNames);
+    }
+
+    private static String requireDriverClassName(DatabaseBackend backend, String... classNames) throws IOException {
+        return requireClassName("driver", backend, classNames);
+    }
+
+    private static String requireClassName(String classType, DatabaseBackend backend, String... classNames) throws IOException {
+        for (String className : classNames) {
+            if (isClassAvailable(className)) {
+                return className;
+            }
+        }
+
+        throw new IOException(
+                "No " + classType + " class is available for the " + backend.getBackendName() +
+                        " backend. Tried: " + Arrays.toString(classNames) +
+                        ". Ensure the selected backend's JDBC driver is available to the server/plugin runtime."
+        );
+    }
+
+    private static boolean isClassAvailable(String className) {
+        return isClassAvailable(className, DatabaseManager.class.getClassLoader()) ||
+                isClassAvailable(className, Thread.currentThread().getContextClassLoader()) ||
+                isClassAvailable(className, ClassLoader.getSystemClassLoader());
+    }
+
+    private static boolean isClassAvailable(String className, ClassLoader classLoader) {
+        if (classLoader == null) {
+            return false;
+        }
+
+        try {
+            Class.forName(className, false, classLoader);
+            return true;
+        } catch (ClassNotFoundException ignored) {
+            return false;
+        }
+    }
+
+    private static String getConnectionDetails(
+            SettingsManager settingsManager,
+            DatabaseBackend backend,
+            HikariConfig config
+    ) {
+        if (backend == DatabaseBackend.SQLITE) {
+            return "jdbcUrl=" + config.getJdbcUrl() +
+                    ", driver=" + config.getDriverClassName();
+        }
+
+        return "host=" + settingsManager.getProperty(StorageSettings.SQL_HOST) +
+                ", port=" + settingsManager.getProperty(StorageSettings.SQL_PORT) +
+                ", database=" + settingsManager.getProperty(StorageSettings.SQL_DATABASE) +
+                ", username=" + settingsManager.getProperty(StorageSettings.SQL_USERNAME) +
+                ", datasource=" + config.getDataSourceClassName();
     }
 }

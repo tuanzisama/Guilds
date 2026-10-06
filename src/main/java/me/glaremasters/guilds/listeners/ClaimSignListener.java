@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.listeners;
 
 import ch.jalu.configme.SettingsManager;
@@ -40,7 +17,10 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.SignChangeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.codemc.worldguardwrapper.WorldGuardWrapper;
+import org.codemc.worldguardwrapper.region.IWrappedRegion;
 import org.codemc.worldguardwrapper.selection.ICuboidSelection;
+
+import java.util.OptionalDouble;
 
 /**
  * Created by Glare
@@ -52,12 +32,13 @@ public class ClaimSignListener implements Listener {
     private final Guilds guilds;
     private final SettingsManager settingsManager;
     private final GuildHandler guildHandler;
-    private final WorldGuardWrapper wrapper = WorldGuardWrapper.getInstance();
+    private final WorldGuardWrapper wrapper;
 
-    public ClaimSignListener(Guilds guilds, SettingsManager settingsManager, GuildHandler guildHandler) {
+    public ClaimSignListener(Guilds guilds, SettingsManager settingsManager, GuildHandler guildHandler, WorldGuardWrapper wrapper) {
         this.guilds = guilds;
         this.settingsManager = settingsManager;
         this.guildHandler = guildHandler;
+        this.wrapper = wrapper;
     }
 
     @EventHandler
@@ -79,7 +60,7 @@ public class ClaimSignListener implements Listener {
             return;
         }
 
-        if (event.getLine(1).isEmpty() || event.getLine(2).isEmpty()) {
+        if (event.getLine(1).isEmpty() || !parseClaimPrice(event.getLine(2)).isPresent()) {
             guilds.getCommandManager().getCommandIssuer(player).sendInfo(Messages.CLAIM__SIGN_INVALID_FORMAT);
             event.setCancelled(true);
             return;
@@ -110,7 +91,10 @@ public class ClaimSignListener implements Listener {
 
         Player player = event.getPlayer();
 
-        if (!sign.getLine(0).equalsIgnoreCase("[Guild Claim]"))
+        // Read the configured text, same as onSignChange. This used to hardcode the default
+        // "[Guild Claim]" while the writer used the config value, so changing
+        // claims.claim-sign-text made placed signs unpurchasable.
+        if (!sign.getLine(0).equalsIgnoreCase(settingsManager.getProperty(ClaimSettings.CLAIM_SIGN_TEXT)))
             return;
 
         if (!settingsManager.getProperty(ClaimSettings.CLAIM_SIGNS)) {
@@ -136,16 +120,33 @@ public class ClaimSignListener implements Listener {
             return;
         }
 
-        if (guild.getBalance() < Double.valueOf(sign.getLine(2))) {
+        OptionalDouble parsedPrice = parseClaimPrice(sign.getLine(2));
+        if (!parsedPrice.isPresent()) {
+            guilds.getCommandManager().getCommandIssuer(player).sendInfo(Messages.CLAIM__SIGN_INVALID_FORMAT);
+            return;
+        }
+
+        double claimPrice = parsedPrice.getAsDouble();
+        if (guild.getBalance() < claimPrice) {
             guilds.getCommandManager().getCommandIssuer(player).sendInfo(Messages.CLAIM__SIGN_NOT_ENOUGH);
             return;
         }
 
-        ClaimUtils.getClaim(wrapper, player, sign.getLine(1)).ifPresent(region -> {
-            ICuboidSelection selection = ClaimUtils.getSelection(wrapper, player, region.getId());
-            wrapper.removeRegion(player.getWorld(), region.getId());
-            ClaimUtils.createClaim(wrapper, guild, selection);
-        });
+        IWrappedRegion existingRegion = ClaimUtils.getClaim(wrapper, player, sign.getLine(1)).orElse(null);
+
+        // The region can be deleted or renamed between the sign being placed and bought,
+        // so resolve the selection before touching anything. Without it there is no claim
+        // to create, and the player must not be charged for one they never got.
+        if (existingRegion == null) {
+            guilds.getCommandManager().getCommandIssuer(player).sendInfo(Messages.CLAIM__SIGN_INVALID_REGION);
+            return;
+        }
+
+        ICuboidSelection selection = ClaimUtils.getSelection(wrapper, player, existingRegion.getId());
+
+        wrapper.removeRegion(player.getWorld(), existingRegion.getId());
+
+        ClaimUtils.createClaim(wrapper, guild, selection);
 
         ClaimUtils.getGuildClaim(wrapper, player, guild).ifPresent(region -> {
             ClaimUtils.addOwner(region, guild);
@@ -156,9 +157,30 @@ public class ClaimSignListener implements Listener {
 
         player.getWorld().getBlockAt(block.getLocation()).breakNaturally();
 
-        guild.setBalance(guild.getBalance() - Double.valueOf(sign.getLine(2)));
+        guild.setBalance(guild.getBalance() - claimPrice);
 
         guilds.getCommandManager().getCommandIssuer(player).sendInfo(Messages.CLAIM__SIGN_BUY_SUCCESS);
+    }
+
+    private OptionalDouble parseClaimPrice(String raw) {
+        if (raw == null) {
+            return OptionalDouble.empty();
+        }
+
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) {
+            return OptionalDouble.empty();
+        }
+
+        try {
+            double price = Double.parseDouble(trimmed);
+            if (Double.isNaN(price) || Double.isInfinite(price) || price < 0) {
+                return OptionalDouble.empty();
+            }
+            return OptionalDouble.of(price);
+        } catch (NumberFormatException ignored) {
+            return OptionalDouble.empty();
+        }
     }
 
 }

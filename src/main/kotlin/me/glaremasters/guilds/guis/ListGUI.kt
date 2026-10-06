@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.guis
 
 import ch.jalu.configme.SettingsManager
@@ -38,6 +15,23 @@ import me.glaremasters.guilds.utils.GuiUtils
 import me.glaremasters.guilds.utils.StringUtils
 import org.bukkit.entity.Player
 import java.text.SimpleDateFormat
+import java.util.*
+import kotlin.Comparator
+import kotlin.collections.ArrayList
+
+/**
+ * The guild master's display name, for use in a lore or name placeholder.
+ *
+ * Both the stored [me.glaremasters.guilds.guild.GuildMember] and the resolved
+ * [org.bukkit.OfflinePlayer] expose a nullable name, so dereferencing it here used to throw and
+ * take the whole `/guilds list` GUI down for every player whenever a single guild had an
+ * unresolvable master.
+ *
+ * Shared with the placeholder expansion, which resolves the master's name for `%guilds_master%`.
+ *
+ * @return the master's name, or `"Master"` when it cannot be resolved
+ */
+internal fun Guild.guildMasterName(): String = this.guildMaster?.name ?: "Master"
 
 class ListGUI(private val guilds: Guilds, private val settingsManager: SettingsManager, private val guildHandler: GuildHandler) {
     private val items: MutableList<GuiItem>
@@ -75,7 +69,9 @@ class ListGUI(private val guilds: Guilds, private val settingsManager: SettingsM
     private fun createListItems(gui: PaginatedGui, player: Player) {
         val guilds = guildHandler.guilds.values.toMutableList()
 
-        when (settingsManager.getProperty(GuildListSettings.GUILD_LIST_SORT).toUpperCase()) {
+        // Locale.ROOT: on a Turkish-locale JVM the default locale uppercases "i" to "İ" and misses
+        // the match below.
+        when (settingsManager.getProperty(GuildListSettings.GUILD_LIST_SORT).uppercase(Locale.ROOT)) {
             "TIER" -> guilds.sortWith(Comparator.comparingInt { g: Guild -> g.tier.level }.reversed())
             "MEMBERS" -> guilds.sortWith(Comparator.comparingInt { g: Guild -> g.members.size }.reversed())
             "BALANCE" -> guilds.sortWith(Comparator.comparingDouble { obj: Guild -> obj.balance }.reversed())
@@ -100,12 +96,18 @@ class ListGUI(private val guilds: Guilds, private val settingsManager: SettingsM
     private fun setListItem(guild: Guild, player: Player) {
         val defaultUrl = settingsManager.getProperty(GuildListSettings.GUILD_LIST_HEAD_DEFAULT_URL)
         val useDefaultUrl = settingsManager.getProperty(GuildListSettings.USE_DEFAULT_TEXTURE)
-        val item = if (!useDefaultUrl) guild.skull else GuildSkull(defaultUrl).itemStack
+
+        val item = if (!useDefaultUrl && guild.guildSkull != null) {
+            guild.guildSkull?.createSkull() ?: GuildSkull(defaultUrl).itemStack
+        } else {
+            GuildSkull(defaultUrl).itemStack
+        }
+
         val meta = item.itemMeta
         var name = settingsManager.getProperty(GuildListSettings.GUILD_LIST_ITEM_NAME)
 
         name = StringUtils.color(name)
-        name = name.replace("{player}", if (guild.guildMaster != null) guild.guildMaster.name.toString() else "Master")
+        name = name.replace("{player}", guild.guildMasterName())
         name = name.replace("{guild}", guild.name)
 
         meta?.setDisplayName(name)
@@ -143,7 +145,7 @@ class ListGUI(private val guilds: Guilds, private val settingsManager: SettingsM
             updated.add(StringUtils.color(line
                     .replace("{guild-name}", guild.name)
                     .replace("{guild-prefix}", guild.prefix)
-                    .replace("{guild-master}", guild.guildMaster.asOfflinePlayer.name.toString())
+                    .replace("{guild-master}", guild.guildMasterName())
                     .replace("{guild-status}", status)
                     .replace("{guild-tier}", tier)
                     .replace("{guild-balance}", EconomyUtils.format(guild.balance))

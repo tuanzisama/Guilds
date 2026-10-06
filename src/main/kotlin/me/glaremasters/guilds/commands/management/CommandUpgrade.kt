@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.commands.management
 
 import ch.jalu.configme.SettingsManager
@@ -66,12 +43,10 @@ internal class CommandUpgrade : BaseCommand() {
     @CommandPermission(Constants.BASE_PERM + "upgrade")
     @Syntax("")
     fun upgrade(player: Player, @Conditions("perm:perm=UPGRADE_GUILD") guild: Guild) {
-        if (guildHandler.isMaxTier(guild)) {
-            throw ExpectationNotMet(Messages.UPGRADE__TIER_MAX)
-        }
-
-        val tier = guildHandler.getGuildTier(guild.tier.level + 1)!!
-        val cost = tier.cost
+        // Resolving the target tier up front is what makes this safe: the old
+        // getGuildTier(level + 1)!! threw whenever that exact level was absent from tiers.yml.
+        val next = guildHandler.getNextGuildTier(guild) ?: throw ExpectationNotMet(Messages.UPGRADE__TIER_MAX)
+        val cost = next.cost
 
         if (guildHandler.memberCheck(guild)) {
             throw ExpectationNotMet(Messages.UPGRADE__NOT_ENOUGH_MEMBERS, "{amount}", guild.tier.membersToRankup.toString())
@@ -88,16 +63,23 @@ internal class CommandUpgrade : BaseCommand() {
                     throw ExpectationNotMet(Messages.UPGRADE__NOT_ENOUGH_MONEY, "{needed}", EconomyUtils.format(cost - guild.balance))
                 }
 
+                val event = GuildUpgradeEvent(player, guild, next)
+                Bukkit.getPluginManager().callEvent(event)
+
+                if (event.isCancelled) {
+                    actionHandler.removeAction(player)
+                    return
+                }
+
                 guild.balance = guild.balance - cost
 
-                guildHandler.removeGuildPermsFromAll(permission, guild)
+                // The old tier's permissions have to be captured before the move, and handed to
+                // applyTierPerms together with the new tier's: removing and granting them as two
+                // calls either side of upgradeTier let the removal land after the grant.
+                val previousTier = guild.tier
                 guildHandler.upgradeTier(guild)
-                guildHandler.addGuildPermsToAll(permission, guild)
+                guildHandler.applyTierPerms(permission, guild, previousTier)
                 currentCommandIssuer.sendInfo(Messages.UPGRADE__SUCCESS)
-
-
-                val event = GuildUpgradeEvent(player, guild, guild.tier)
-                Bukkit.getPluginManager().callEvent(event)
 
                 actionHandler.removeAction(player)
             }

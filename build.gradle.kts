@@ -1,179 +1,637 @@
-import com.github.jengelman.gradle.plugins.shadow.ShadowPlugin
-import net.kyori.indra.IndraPlugin
-import net.kyori.indra.IndraPublishingPlugin
-import org.jetbrains.dokka.gradle.DokkaTask
-import java.net.URL
+import com.diffplug.gradle.spotless.FormatExtension
+import com.diffplug.gradle.spotless.SpotlessExtension
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import me.drownek.plugwright.local.LocalMode
+import org.gradle.language.jvm.tasks.ProcessResources
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import xyz.jpenilla.runpaper.task.RunServer
 
 plugins {
-    id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.9.20"
-    id("net.kyori.indra") version "3.1.3"
-    id("net.kyori.indra.publishing") version "3.1.3"
-    id("net.kyori.indra.license-header") version "3.1.3"
-    id("com.github.johnrengelman.shadow") version "8.1.1"
-    id("io.github.slimjar") version "1.3.0"
-    id("xyz.jpenilla.run-paper") version "2.2.0"
-    id("com.github.ben-manes.versions") version "0.48.0"
-    id("org.jetbrains.dokka") version "1.9.0"
+    `java-library`
+    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.indra)
+    alias(libs.plugins.indra.publishing)
+    alias(libs.plugins.spotless)
+    alias(libs.plugins.shadow)
+    alias(libs.plugins.versions)
+    alias(libs.plugins.dokka)
+    alias(libs.plugins.run.paper)
+    alias(libs.plugins.quark)
+
+    // End-to-end testing with real Paper server and real player bots. 3.0.0 is the latest
+    // stable release; the Gradle plugin only resolves from the Plugin Portal, which `plugins {}`
+    // consults implicitly.
+    id("io.github.drownek.plugwright") version "3.0.0"
 }
 
 group = "me.glaremasters"
-version = "3.5.7.1-SNAPSHOT"
+version = "3.5.7.4-SNAPSHOT"
+
+val pluginVersion = version.toString()
 
 base {
-    archivesBaseName = "Guilds"
+    archivesName.set("Guilds")
 }
 
-apply {
-    plugin<ShadowPlugin>()
-    plugin<IndraPlugin>()
-    plugin<IndraPublishingPlugin>()
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    }
+
+    withSourcesJar()
+    withJavadocJar()
 }
 
-repositories {
-    mavenCentral()
-    maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/") {
-        content {
-            includeGroup("org.bukkit")
-            includeGroup("org.spigotmc")
-        }
-    }
-    maven("https://oss.sonatype.org/content/groups/public/")
-    maven("https://repo.aikar.co/content/groups/aikar/") {
-        content { includeGroup("co.aikar") }
-    }
-    maven("https://repo.extendedclip.com/content/repositories/placeholderapi/")
+kotlin {
+    jvmToolchain(21)
+}
 
-    maven("https://repo.codemc.org/repository/maven-public/") {
-        content { includeGroup("org.codemc.worldguardwrapper") }
+quark {
+    /*
+     * Use Bukkit for the main SpigotMC artifact.
+     * Paper can run Bukkit plugins, but Spigot cannot run Paper-specific loaders.
+     */
+    platform = "bukkit"
+
+    repositories {
+        maven("https://repo.maven.apache.org/maven2/")
     }
-    maven("https://repo.glaremasters.me/repository/public/")
 }
 
 dependencies {
-    implementation("io.github.slimjar:slimjar:1.2.7")
-    implementation("co.aikar:acf-paper:0.5.1-SNAPSHOT")
-    implementation("org.bstats:bstats-bukkit:3.0.2")
-    implementation("co.aikar:taskchain-bukkit:3.7.2")
-    implementation("org.codemc.worldguardwrapper:worldguardwrapper:1.1.9-SNAPSHOT")
-    implementation("ch.jalu:configme:1.3.0")
-    implementation("com.dumptruckman.minecraft:JsonConfiguration:1.1")
-    implementation("com.github.cryptomorin:XSeries:9.7.0")
-    implementation("net.kyori:adventure-platform-bukkit:4.3.1")
-    implementation("dev.triumphteam:triumph-gui:3.1.5")
-    implementation("com.zaxxer:HikariCP:4.0.3")
-    implementation("org.jdbi:jdbi3-core:3.8.2")
-    implementation("org.jdbi:jdbi3-sqlobject:3.8.2")
-    implementation("org.mariadb.jdbc:mariadb-java-client:2.7.2")
+    /*
+     * Bundled into the final plugin jar by shadowJar.
+     */
+    implementation(libs.acf.paper)
+    implementation(libs.bstats.bukkit)
+    implementation(libs.taskchain.bukkit)
+    implementation(libs.worldguardwrapper)
+    implementation(libs.configme)
+    implementation(libs.jsonconfiguration)
+    implementation(libs.xseries)
+    implementation(libs.adventure.platform.bukkit)
+    implementation(libs.triumph.gui)
+    implementation(libs.quark.bukkit)
 
-    compileOnly("org.spigotmc:spigot-api:1.20.2-R0.1-SNAPSHOT")
-    compileOnly("net.milkbowl:vault:1.7")
-    compileOnly("me.clip:placeholderapi:2.11.4")
+    /*
+     * Large runtime libraries are compiled against locally, but downloaded and loaded
+     * by Quark to keep the file size slim.
+     */
+    compileOnly(libs.kotlin.stdlib)
+    quark(libs.kotlin.stdlib)
 
-    slim("org.jetbrains.kotlin:kotlin-stdlib")
+    compileOnly(libs.hikaricp)
+    quark(libs.hikaricp)
+
+    compileOnly(libs.jdbi.core)
+    quark(libs.jdbi.core)
+
+    compileOnly(libs.jdbi.sqlobject)
+    quark(libs.jdbi.sqlobject)
+
+    compileOnly(libs.mariadb.client)
+    quark(libs.mariadb.client)
+
+    /*
+     * Provided by the server or by other plugins at runtime.
+     * These must not be bundled or relocated.
+     */
+    compileOnly(libs.spigot.api)
+    compileOnly(libs.vault)
+    compileOnly(libs.placeholderapi)
+    compileOnly(libs.authlib) {
+        isTransitive = false
+    }
+    compileOnly(libs.guava)
+
+    /*
+     * Tests run without a server, so spigot-api and vault have to be on the test classpath even
+     * though the server provides them at runtime.
+     *
+     * The API is 1.16.5 rather than the one the plugin compiles against. The current Spigot API
+     * ships Java 17+ bytecode, which a Java 11 JVM cannot load, so the testJava11 run would fail
+     * before reaching a single assertion. The tests only touch API that has been stable since 1.8.
+     */
+    testImplementation(platform(libs.junit.bom))
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.mockito.core)
+    testImplementation(libs.spigot.api.test)
+    testImplementation(libs.vault)
+    // compileOnly above, because Quark loads it at plugin startup. Tests run as plain JVM code.
+    testImplementation(libs.kotlin.stdlib)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
-tasks.withType<DokkaTask>().configureEach {
-    dokkaSourceSets {
-        named("main") {
-            moduleName.set("Guilds")
+extensions.configure<SpotlessExtension> {
+    fun FormatExtension.standardOptions() {
+        endWithNewline()
+        trimTrailingWhitespace()
+        leadingTabsToSpaces(4)
+        toggleOffOn("@formatter:off", "@formatter:on")
+    }
 
-            includes.from(project.files(), "Module.md")
+    java {
+        target("src/**/*.java")
 
-            sourceLink {
-                localDirectory.set(projectDir.resolve("src"))
-                remoteUrl.set(URL("https://github.com/guilds-plugin/Guilds/tree/master/src"))
-                remoteLineSuffix.set("#L")
+        targetExclude(
+            "src/**/me/glaremasters/guilds/scanner/ZISScanner.java",
+            "src/**/me/glaremasters/guilds/updater/UpdateChecker.java",
+            "src/**/me/glaremasters/guilds/utils/PremiumFun.java"
+        )
+
+        standardOptions()
+        formatAnnotations()
+        removeUnusedImports()
+    }
+
+    kotlin {
+        target("src/**/*.kt")
+
+        standardOptions()
+    }
+
+    kotlinGradle {
+        target("*.gradle.kts", "gradle/**/*.gradle.kts")
+
+        standardOptions()
+    }
+}
+
+tasks.withType<KotlinCompile>().configureEach {
+    compilerOptions {
+        javaParameters.set(true)
+        jvmTarget.set(JvmTarget.JVM_11)
+    }
+}
+
+tasks.withType<Test>().configureEach {
+    useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(11)
+    options.encoding = "UTF-8"
+    options.compilerArgs.addAll(
+        listOf(
+            "-parameters",
+            "-Xlint:-classfile"
+        )
+    )
+}
+
+/*
+ * Compiles every org.bukkit.Material constant referenced from src/main against the 1.8.8 API, so a
+ * constant that only exists on newer servers cannot reach a release. Material is the hazard that
+ * matters: the 1.13 flattening renamed several hundred constants at once.
+ *
+ * Deliberately does not compile the whole source set against 1.8.8. The plugin has version-guarded
+ * code that has to keep working on modern servers, and that is not expressible in a 1.8.8-only
+ * compilation. See gradle/legacy-api-allowlist.txt for the escape hatch and the trade-offs.
+ */
+val legacyApiAllowlist = layout.projectDirectory.file("gradle/legacy-api-allowlist.txt")
+
+val legacyApi = configurations.create("legacyApi") {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
+/*
+ * Matches `Material.SOMETHING` but not `XMaterial.SOMETHING`, which is the abstraction to prefer.
+ * Comments are stripped first so that documenting why a constant is unsafe on 1.8.8 does not by
+ * itself fail the build. Not a real lexer: a line comment marker inside a string literal over-strips
+ * and can hide a reference, which is a false negative and acceptable for a tripwire.
+ */
+val materialConstantPattern = Regex("""(?<![A-Za-z0-9_$.])Material\.([A-Z][A-Z_0-9]*)""")
+val commentPattern = Regex("""/\*.*?\*/|//[^\n]*""", RegexOption.DOT_MATCHES_ALL)
+
+val generateLegacyApiProbe = tasks.register("generateLegacyApiProbe") {
+    val allowlistFile = legacyApiAllowlist
+    val outputDir = layout.buildDirectory.dir("generated/legacyApiProbe")
+    val mainSourceFiles = fileTree(layout.projectDirectory.dir("src/main"))
+
+    inputs.files(mainSourceFiles)
+        .withPropertyName("mainSources")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(allowlistFile).withPropertyName("allowlist").withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.dir(outputDir).withPropertyName("probeSources")
+
+    doLast {
+        val allowed = allowlistFile.asFile
+            .readLines()
+            .map { it.substringBefore('#').trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+
+        val referenced = mainSourceFiles
+            .filter { it.isFile }
+            .flatMap { file ->
+                val code = commentPattern.replace(file.readText(), " ")
+                materialConstantPattern.findAll(code).map { it.groupValues[1] }.toList()
             }
+            .distinct()
+            .sorted()
+
+        val denied = referenced.filterNot { it in allowed }
+        val skipped = referenced.filter { it in allowed }
+
+        val target = outputDir.get().dir("me/glaremasters/guilds/compat").asFile
+        target.deleteRecursively()
+        target.mkdirs()
+
+        val body = denied
+            .map { "        probe(org.bukkit.Material.$it);" }
+            .ifEmpty { listOf("        // No Bukkit Material constants are referenced directly from src/main.") }
+
+        File(target, "LegacyMaterialProbe.java").writeText(
+            listOf(
+                "package me.glaremasters.guilds.compat;",
+                "",
+                "/**",
+                " * Generated by generateLegacyApiProbe. Compiled against the 1.8.8 API on purpose.",
+                " *",
+                " * If this fails to compile, a Material constant is unavailable on 1.8.8. Use XSeries",
+                " * instead, or add a documented entry to gradle/legacy-api-allowlist.txt.",
+                " */",
+                "final class LegacyMaterialProbe {",
+                "",
+                "    private LegacyMaterialProbe() {",
+                "    }",
+                "",
+                "    private static void probe(Object ignored) {",
+                "    }",
+                "",
+                "    static void probe() {",
+                *body.toTypedArray(),
+                "    }",
+                "}",
+                "",
+            ).joinToString("\n")
+        )
+
+        logger.lifecycle(
+            "Legacy API probe: ${denied.size} Material constant(s) checked against 1.8.8, " +
+                "${skipped.size} allow-listed." +
+                if (skipped.isEmpty()) "" else " Allow-listed: ${skipped.joinToString()}."
+        )
+    }
+}
+
+val legacyApiProbeSourceSet = sourceSets.create("legacyApiProbe") {
+    java.srcDir(generateLegacyApiProbe.map { it.outputs.files.singleFile })
+}
+
+configurations[legacyApiProbeSourceSet.compileClasspathConfigurationName]
+    .extendsFrom(configurations[legacyApi.name])
+
+dependencies {
+    legacyApi(libs.spigot.api.legacy) {
+        // The 1.8.8 POM pulls in bungeecord-chat:1.8-SNAPSHOT, purged from Sonatype. The probe does
+        // not need it.
+        isTransitive = false
+    }
+}
+
+tasks.named("check") {
+    dependsOn(tasks.named(legacyApiProbeSourceSet.classesTaskName))
+}
+
+tasks.named<Jar>("jar") {
+    enabled = false
+}
+
+tasks.named<ProcessResources>("processResources") {
+    filteringCharset = "UTF-8"
+
+    /*
+     * Configuration-cache safe:
+     * - compute a plain serializable value during configuration
+     * - declare it as an input
+     * - capture only this map in the CopySpec action
+     */
+    val resourceTokens = mapOf(
+        "version" to pluginVersion
+    )
+
+    inputs.properties(resourceTokens)
+
+    filesMatching("plugin.yml") {
+        expand(resourceTokens)
+    }
+}
+
+tasks.named<ShadowJar>("shadowJar") {
+    minimize()
+
+    archiveClassifier.set("")
+    archiveBaseName.set("Guilds")
+    archiveVersion.set(pluginVersion)
+
+    /*
+     * Shadow's default is already runtimeClasspath, but keeping this explicit makes
+     * the intent clear: implementation/runtime dependencies are shaded; compileOnly
+     * APIs are not.
+     */
+    configurations = project.configurations.runtimeClasspath.map { listOf(it) }
+
+    /*
+     * Required for libraries that use META-INF/services, such as JDBC drivers and
+     * libraries with service-loader based discovery.
+     */
+    mergeServiceFiles()
+
+    /*
+     * Avoid invalid signature metadata after classes/resources are transformed.
+     */
+    exclude(
+        "META-INF/*.SF",
+        "META-INF/*.DSA",
+        "META-INF/*.RSA",
+        "META-INF/INDEX.LIST",
+        "module-info.class"
+    )
+
+    /*
+     * Reproducible jar output.
+     */
+    isReproducibleFileOrder = true
+    isPreserveFileTimestamps = false
+
+    val relocationRoot = "me.glaremasters.guilds.libs"
+
+    /*
+     * ACF
+     */
+    relocate("co.aikar.commands", "$relocationRoot.acf.commands") {
+        skipStringConstants = true
+    }
+    relocate("co.aikar.locales", "$relocationRoot.acf.locales") {
+        skipStringConstants = true
+    }
+
+    /*
+     * TaskChain
+     */
+    relocate("co.aikar.taskchain", "$relocationRoot.taskchain") {
+        skipStringConstants = true
+    }
+
+    /*
+     * bStats
+     */
+    relocate("org.bstats", "$relocationRoot.bstats") {
+        skipStringConstants = true
+    }
+
+    /*
+     * WorldGuardWrapper.
+     *
+     * Do not relocate WorldGuard, WorldEdit, Bukkit, or Spigot APIs themselves.
+     * Only relocate the wrapper library.
+     */
+    relocate("org.codemc.worldguardwrapper", "$relocationRoot.worldguardwrapper") {
+        skipStringConstants = true
+    }
+
+    /*
+     * Config libraries
+     */
+    relocate("ch.jalu.configme", "$relocationRoot.configme") {
+        skipStringConstants = true
+    }
+    relocate("com.dumptruckman.minecraft", "$relocationRoot.jsonconfiguration") {
+        skipStringConstants = true
+    }
+
+    /*
+     * XSeries
+     */
+    relocate("com.cryptomorin.xseries", "$relocationRoot.xseries") {
+        skipStringConstants = true
+    }
+
+    /*
+     * Adventure platform and Kyori internals.
+     *
+     * This is safe when Adventure is used internally by the plugin.
+     * If your public API exposes Adventure Component types to other plugins,
+     * do not relocate net.kyori.adventure.
+     */
+    relocate("net.kyori.adventure", "$relocationRoot.adventure") {
+        skipStringConstants = true
+    }
+    relocate("net.kyori.examination", "$relocationRoot.examination") {
+        skipStringConstants = true
+    }
+    relocate("net.kyori.option", "$relocationRoot.kyori.option") {
+        skipStringConstants = true
+    }
+
+    /*
+     * Triumph GUI
+     */
+    relocate("dev.triumphteam.gui", "$relocationRoot.triumph.gui") {
+        skipStringConstants = true
+    }
+
+    /*
+     * Common transitive libraries pulled by shaded dependencies.
+     * These are intentionally narrow to avoid relocating server/plugin APIs.
+     */
+    relocate("org.antlr", "$relocationRoot.antlr") {
+        skipStringConstants = true
+    }
+    relocate("org.checkerframework", "$relocationRoot.checkerframework") {
+        skipStringConstants = true
+    }
+    relocate("org.intellij.lang.annotations", "$relocationRoot.intellij.annotations") {
+        skipStringConstants = true
+    }
+    relocate("org.jetbrains.annotations", "$relocationRoot.jetbrains.annotations") {
+        skipStringConstants = true
+    }
+}
+
+tasks.named("assemble") {
+    dependsOn(tasks.named("shadowJar"))
+}
+
+tasks.named("build") {
+    dependsOn(tasks.named("shadowJar"))
+}
+
+tasks.named("check") {
+    dependsOn(tasks.named("spotlessCheck"))
+}
+
+indra {
+    mitLicense()
+
+    javaVersions {
+        target(11)
+    }
+
+    github("guilds-plugin", "guilds") {
+        publishing(true)
+    }
+
+    publishAllTo("guilds", "https://repo.glaremasters.me/repository/guilds/")
+}
+
+val javaToolchains = extensions.getByType<JavaToolchainService>()
+
+data class MinecraftRunTarget(
+    val minecraftVersion: String,
+    val javaVersion: Int,
+    val directoryName: String = minecraftVersion
+)
+
+val supportedMinecraftVersions = listOf(
+    MinecraftRunTarget("1.8.8", 11),
+    MinecraftRunTarget("1.16.5", 16),
+    MinecraftRunTarget("1.18.2", 17),
+    MinecraftRunTarget("1.19.4", 17),
+    MinecraftRunTarget("1.20.6", 21),
+    MinecraftRunTarget("1.21.1", 21),
+    MinecraftRunTarget("1.21.4", 21),
+    MinecraftRunTarget("1.21.8", 21),
+    MinecraftRunTarget("26.1.2", 25)
+)
+
+fun RunServer.configureGuildsRunServer(target: MinecraftRunTarget) {
+    minecraftVersion(target.minecraftVersion)
+    runDirectory.set(layout.projectDirectory.dir("run/${target.directoryName}"))
+
+    javaLauncher.set(
+        javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(target.javaVersion))
         }
+    )
+
+    pluginJars.from(tasks.named<ShadowJar>("shadowJar").flatMap { it.archiveFile })
+    dependsOn(tasks.named("shadowJar"))
+
+    downloadPlugins {
+        /*
+         * EssentialsX:
+         */
+        github("EssentialsX", "Essentials", "2.22.0", "EssentialsX-2.22.0.jar")
+
+        /*
+         * LuckPerms:
+         * The pinned download.luckperms.net loader URL now 404s, which broke every runServer* task.
+         * b0mk8uS6 is LuckPerms 5.5.71 for the Bukkit loader.
+         */
+        modrinth("luckperms", "b0mk8uS6")
+
+        /*
+         * Vault:
+         * No clean native Hangar source; use pinned release jar.
+         */
+        url("https://github.com/MilkBowl/Vault/releases/download/1.7.3/Vault.jar")
+    }
+
+    doFirst {
+        val serverDir = runDirectory.get().asFile
+        serverDir.mkdirs()
+
+        serverDir.resolve("eula.txt").writeText(
+            """
+            # Generated by Gradle run-paper for local Guilds development.
+            # By changing this setting to TRUE you are indicating your agreement to the Minecraft EULA.
+            # https://aka.ms/MinecraftEULA
+            eula=true
+            """.trimIndent() + System.lineSeparator()
+        )
     }
 }
 
 tasks {
-    build {
-        dependsOn(named("shadowJar"))
-        dependsOn(named("slimJar"))
-    }
-
-    indra {
-        mitLicense()
-
-        javaVersions {
-            target(8)
-        }
-
-        github("guilds-plugin", "guilds") {
-            publishing(true)
-        }
-
-        publishAllTo("guilds", "https://repo.glaremasters.me/repository/guilds/")
-    }
-
-    compileKotlin {
-        kotlinOptions.javaParameters = true
-        kotlinOptions.jvmTarget = "1.8"
-    }
-
-    compileJava {
-        options.compilerArgs = listOf("-parameters")
-    }
-
     runServer {
-        minecraftVersion("1.20")
-    }
-
-    license {
-        header.set(resources.text.fromFile(rootProject.file("LICENSE")))
-        exclude("me/glaremasters/guilds/scanner/ZISScanner.java")
-        exclude("me/glaremasters/guilds/updater/UpdateChecker.java")
-        exclude("me/glaremasters/guilds/utils/PremiumFun.java")
-    }
-
-    shadowJar {
-        fun relocates(vararg dependencies: String) {
-            dependencies.forEach {
-                val split = it.split(".")
-                val name = split.last()
-                relocate(it, "me.glaremasters.guilds.libs.$name")
-            }
-        }
-
-        relocates(
-            "io.github.slimjar"
-        )
-
-        minimize()
-
-        archiveClassifier.set(null as String?)
-        archiveFileName.set("Guilds-${project.version}.jar")
-        destinationDirectory.set(rootProject.tasks.shadowJar.get().destinationDirectory.get())
-    }
-
-    slimJar {
-        fun relocates(vararg dependencies: String) {
-            dependencies.forEach {
-                val split = it.split(".")
-                val name = split.last()
-                relocate(it, "me.glaremasters.guilds.libs.$name")
-            }
-        }
-
-        relocates(
-            "org.bstats",
-            "co.aikar.commands",
-            "co.aikar.locales",
-            "co.aikar.taskchain",
-            "ch.jalu.configme",
-            "com.zaxxer.hikari",
-            "org.jdbi",
-            "org.mariadb.jdbc",
-            "dev.triumphteam.gui",
-            "net.kyori",
-            "kotlin"
+        configureGuildsRunServer(
+            supportedMinecraftVersions.last().copy(directoryName = "latest")
         )
     }
 
-    processResources {
-        expand("version" to rootProject.version)
+    supportedMinecraftVersions.forEach { target ->
+        val taskSuffix = target.minecraftVersion.replace(".", "_")
+
+        register<RunServer>("runServer$taskSuffix") {
+            group = "run paper"
+            description =
+                "Runs a Paper test server for Minecraft ${target.minecraftVersion} using Java ${target.javaVersion}."
+
+            configureGuildsRunServer(target)
+        }
+    }
+}
+
+/*
+ * End-to-end testing.
+ *
+ * Plugwright downloads a Paper server, stages Guilds' shadowJar plus the three plugins Guilds
+ * refuses to start without, starts the server and drives it with real mineflayer bots. One
+ * environment only: 1.21.8 on Java 21, the newest version in `supportedMinecraftVersions` that
+ * both Paper and minecraft-data can serve. Adding the historical matrix is separate work.
+ */
+plugwright {
+    testsDir.set(file("src/test/e2e"))
+    primaryEnvironment.set("local")
+
+    environments {
+        create("local", LocalMode) {
+            minecraftVersion.set(
+                providers.gradleProperty("e2eMinecraftVersion").getOrElse("1.21.8")
+            )
+            acceptEula.set(true)
+            jvmArgs.set(listOf("-Xmx3G"))
+
+            /*
+             * The same pins `configureGuildsRunServer` already downloads for the manual
+             * runServer* tasks. Vault is not on Hangar or any Maven repo, so it comes from the
+             * upstream release jar; LuckPerms' loader URL moved, so Modrinth's copy is used.
+             */
+            downloadPlugins {
+                url("https://github.com/MilkBowl/Vault/releases/download/1.7.3/Vault.jar")
+                url("https://cdn.modrinth.com/data/hXiIvTyT/versions/nY6VN1XH/EssentialsX-2.22.0.jar")
+                url("https://cdn.modrinth.com/data/Vebnzrzj/versions/b0mk8uS6/LuckPerms-Bukkit-5.5.71.jar")
+            }
+
+            /*
+             * Guilds has no plugin.yml defaults for its commands, so a non-op player has none of
+             * `guilds.command.*`. Staging the config here is what makes every test deterministic:
+             * `plugwrightClean` wipes the run directory before each provision, so the plugin only
+             * ever sees this config and a freshly generated tiers.yml/roles.yml.
+             */
+            writeFiles {
+                file("plugins/Guilds/config.yml", file("src/test/e2e/server/plugins/Guilds/config.yml"))
+                file("plugins/Guilds/tiers.yml", file("src/test/e2e/server/plugins/Guilds/tiers.yml"))
+                file("plugins/Guilds/buffs.yml", file("src/test/e2e/server/plugins/Guilds/buffs.yml"))
+            }
+
+            plugins {
+                local("guilds")
+            }
+        }
+    }
+}
+
+/*
+ * Indra registers testJava11 and wires it into check, but it does not give the task a launcher, so
+ * the task runs on whatever JVM Gradle runs on. Java 11 is the documented runtime floor, so point
+ * it at a real Java 11 toolchain.
+ *
+ * afterEvaluate, because indra registers the task from its extension block further down, and
+ * tasks.named(...) would not resolve before that.
+ */
+afterEvaluate {
+    tasks.named<Test>("testJava11") {
+        javaLauncher.set(javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(11))
+        })
     }
 }

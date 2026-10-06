@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.configuration.sections;
 
 import ch.jalu.configme.Comment;
@@ -36,16 +13,6 @@ import static ch.jalu.configme.properties.PropertyInitializer.newProperty;
  * Time: 2:29 PM
  */
 public final class PluginSettings implements SettingsHolder {
-
-    @Comment({"This is used for the Guild's Announcement System, which allow me (The Author) to communicate to you guys without updating.",
-            "The way this works is very simple. If you have \"console\" set to \"true\", you will see the announcement when the server starts.",
-            "If you have \"in-game\" set to \"true\", your OPed players will see it the first time they login to the server."
-    })
-    public static final Property<Boolean> ANNOUNCEMENTS_CONSOLE =
-            newProperty("settings.announcements.console", true);
-
-    public static final Property<Boolean> ANNOUNCEMENTS_IN_GAME =
-            newProperty("settings.announcements.in-game", true);
 
     @Comment({"Choosing your language for the plugin couldn't be easier! The default language is english.",
             "If you speak another language but don't see it here, feel free to submit it via one of the links above to have it added to the plugin.",

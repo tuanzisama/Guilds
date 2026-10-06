@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2023 Glare
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 package me.glaremasters.guilds.database.cooldowns;
 
 import me.glaremasters.guilds.Guilds;
@@ -90,15 +67,33 @@ public class CooldownAdapter {
         provider.deleteCooldown(sqlTablePrefix, cooldownType.getTypeName(), cooldownOwner.toString());
     }
 
+    /**
+     * Saves every cooldown that is not already stored, one record at a time.
+     *
+     * <p>Previously a single wrapped try around the whole loop: the first failure abandoned every
+     * cooldown after it, and the catch logged a fixed string with no record identity and, crucially,
+     * no throwable — so the cause was never visible anywhere. The only caller is the shutdown save,
+     * so each abandoned cooldown was lost for good.
+     *
+     * @param cooldowns the cooldowns to save
+     */
     public void saveCooldowns(Collection<Cooldown> cooldowns) {
-        try {
-            for (Cooldown cooldown : cooldowns) {
+        int failed = 0;
+
+        for (Cooldown cooldown : cooldowns) {
+            try {
                 if (!cooldownExists(cooldown)) {
                     createCooldown(cooldown);
                 }
+            } catch (IOException | RuntimeException e) {
+                failed++;
+                LoggingUtils.warn("Failed to save cooldown " + cooldown.getCooldownType().getTypeName()
+                        + " for " + cooldown.getCooldownOwner() + "; the other cooldowns are still being saved.", e);
             }
-        } catch (IOException ex) {
-            LoggingUtils.warn("Failed to save cooldowns");
+        }
+
+        if (failed > 0) {
+            LoggingUtils.severe(failed + " of " + cooldowns.size() + " cooldowns failed to save. See the warnings above.");
         }
     }
 }
